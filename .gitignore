@@ -30,3 +30,6 @@
 *.mp4
 *.tlog
 *.bak
+
+# linux sh
+*.sh
