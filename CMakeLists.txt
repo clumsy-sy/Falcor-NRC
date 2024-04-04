@@ -126,9 +126,23 @@ endif()
 
 # Set default CUDA architecture to 75 (Turing).
 # This can be overwritten for individual targets using the CUDA_ARCHITECTURE property.
+# 89 RTX 4070 Laptop
 if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
-  set(CMAKE_CUDA_ARCHITECTURES 75-virtual)
+    #   set(CMAKE_CUDA_ARCHITECTURES 75-virtual)
+    set(CMAKE_CUDA_ARCHITECTURES 89-virtual)
+    set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} --extended-lambda")
 endif()
+message("CUDA msg: [ARCHITECTURES] = ${CMAKE_CUDA_ARCHITECTURES}")
+
+if(NOT DEFINED CMAKE_CUDA_FLAGS)
+    set(CMAKE_CUDA_FLAGS --extended-lambda)
+endif()
+
+if(NOT DEFINED CMAKE_CUDA_FLAGS_DEBUG)
+    set(CMAKE_CUDA_FLAGS_DEBUG --extended-lambda)
+endif()
+message("CUDA msg: [CMAKE_CUDA_FLAGS] = ${CMAKE_CUDA_FLAGS}")
+message("CUDA msg: [CMAKE_CUDA_FLAGS_DEBUG] = ${CMAKE_CUDA_FLAGS_DEBUG}")
 
 include(CheckLanguage)
 check_language(CUDA)
@@ -307,8 +321,8 @@ set_property(GLOBAL PROPERTY FALCOR_PLUGIN_TARGETS)
 # Create a Falcor plugin.
 function(add_plugin target)
     add_library(${target} SHARED)
-
-    target_link_libraries(${target} PRIVATE Falcor)
+    # may be if need cuda ?
+    target_link_libraries(${target} PRIVATE Falcor ${CUDA_curand_LIBRARY})
 
     set_target_properties(${target} PROPERTIES
         PREFIX ""

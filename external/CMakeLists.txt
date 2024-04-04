@@ -48,6 +48,20 @@ add_subdirectory(pybind11)
 # vulkan-headers
 add_subdirectory(vulkan-headers)
 
+# tiny-cuda-nn
+message(STATUS "Configure tiny-cuda-nn")
+add_subdirectory(tiny-cuda-nn)
+# get Macro definition
+# message("-- TCNN_DEFINITIONS : ${TCNN_DEFINITIONS}")
+target_compile_definitions(tiny-cuda-nn PUBLIC ${TCNN_DEFINITIONS})
+# 获取子项 include
+get_target_property(child_include_dirs tiny-cuda-nn INCLUDE_DIRECTORIES)
+# foreach(dir ${child_include_dirs})
+#   message(STATUS "Child project include directory: ${dir}")
+# endforeach()
+# 将子项目的 include 目录添加到父项目的 include 目录中
+target_include_directories(tiny-cuda-nn INTERFACE ${child_include_dirs})
+target_include_directories(tiny-cuda-nn INTERFACE tiny-cuda-nn/dependencies/json)
 
 # -----------------------------------------------------------------------------
 # Dependencies in local files
@@ -67,7 +81,7 @@ target_include_directories(imgui_addons INTERFACE imgui_addons)
 
 # external_includes
 add_library(external_includes INTERFACE)
-target_include_directories(external_includes INTERFACE include)
+target_include_directories(external_includes INTERFACE include tiny-cuda-nn/dependencies tiny-cuda-nn/include)
 
 # -----------------------------------------------------------------------------
 # Dependencies in packman

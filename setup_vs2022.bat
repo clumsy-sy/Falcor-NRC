@@ -17,6 +17,13 @@ set PRESET=windows-vs2022%PRESET_SUFFIX%
 set TOOLSET=host=x86
 set CMAKE_EXE=%~dp0\tools\.packman\cmake\bin\cmake.exe
 set CUSTOM_CUDA_DIR=%~dp0\external\packman\cuda
+set SOURCE_TCNN_FMT_CMAKEFile=%~dp0\tools\fix-tcnn-fmt-cmake.txt
+set SOURCE_TCNN_CMAKEFile=%~dp0\tools\fix-tcnn-cmake.txt
+set TARGET_TCNN_FMT_CMAKEFile=%~dp0\external\tiny-cuda-nn\dependencies\fmt\CMakeLists.txt
+set TARGET_TCNN_CMAKEFile=%~dp0\external\tiny-cuda-nn\CMakeLists.txt
+
+copy /Y %SOURCE_TCNN_FMT_CMAKEFile% %TARGET_TCNN_FMT_CMAKEFile%
+copy /Y %SOURCE_TCNN_CMAKEFile% %TARGET_TCNN_CMAKEFile%
 
 : Check if custom CUDA directory contains a valid CUDA SDK.
 : Adjust toolset string to use the custom CUDA toolkit.
