@@ -7,6 +7,7 @@ add_plugin(MyPathTracer)
 target_sources(MyPathTracer PRIVATE
     NRCInterface.h
     NRCInterface.cpp
+    NRCHelper.cuh
     NRCNetwork.h
     NRCNetwork.cu
     RadianceStructure.slang

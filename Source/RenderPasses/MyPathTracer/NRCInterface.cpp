@@ -1,4 +1,5 @@
 #include "NRCInterface.h"
+#include <cstdint>
 #include "Core/Object.h"
 #include "vector_types.h"
 
@@ -6,7 +7,7 @@
 // #define LOG
 // #endif
 
-namespace NRC
+namespace MININRC
 {
 NRCInterface::NRCInterface(Falcor::ref<Falcor::Device> pDevice)
 {
@@ -17,94 +18,92 @@ NRCInterface::NRCInterface(Falcor::ref<Falcor::Device> pDevice)
     Falcor::logInfo("NRCInterface::working directory: " + std::filesystem::current_path().string());
     Falcor::logInfo("NRCInferface::creating and initializing network");
 
-    nrc_Net_ref = std::make_shared<NRCNetwork>();
+    nrc_network_ref = std::make_shared<NRCNetwork>();
     pDevice = pDevice;
 }
 
 NRCInterface::~NRCInterface()
 {
-    // if (cudaResources.screenQuery != nullptr)
+    // if (mCudaResources.screen_query != nullptr)
     // {
-    //     free(cudaResources.screenQuery);
+    //     free(mCudaResources.screen_query);
     // }
-    // if (cudaResources.trainingQuery != nullptr)
+    // if (mCudaResources.train_query != nullptr)
     // {
-    //     free(cudaResources.trainingQuery);
+    //     free(mCudaResources.train_query);
     // }
-    // if (cudaResources.trainingSample != nullptr)
+    // if (mCudaResources.train_sample != nullptr)
     // {
-    //     free(cudaResources.trainingSample);
+    //     free(mCudaResources.train_sample);
     // }
-    // if (cudaResources.inferenceQueryPixel != nullptr)
+    // if (mCudaResources.infer_query_pixel != nullptr)
     // {
-    //     free(cudaResources.inferenceQueryPixel);
+    //     free(mCudaResources.infer_query_pixel);
     // }
-    // if (cudaResources.counterBufferPtr != nullptr)
+    // if (mCudaResources.counter_buffer_ptr != nullptr)
     // {
-    //     free(cudaResources.counterBufferPtr);
+    //     free(mCudaResources.counter_buffer_ptr);
     // }
-    // if (cudaResources.trainingQueryCounter != nullptr)
+    // if (mCudaResources.train_query_cnt != nullptr)
     // {
-    //     free(cudaResources.trainingQueryCounter);
+    //     free(mCudaResources.train_query_cnt);
     // }
-    // if (cudaResources.trainingSampleCounter != nullptr)
+    // if (mCudaResources.train_sample_cnt != nullptr)
     // {
-    //     free(cudaResources.trainingSampleCounter);
+    //     free(mCudaResources.train_sample_cnt);
     // }
-    nrc_Net_ref->reset();
+    nrc_network_ref->reset();
     pDevice.reset();
 }
 
-void NRCInterface::trainFrame(uint32_t train_cnt, uint32_t self_queriy_cnt, bool shuffle)
+void NRCInterface::train(uint32_t train_cnt, uint32_t self_queriy_cnt, bool shuffle)
 {
     float loss;
-    if (cudaResources.trainingQuery == nullptr || cudaResources.trainingQueryCounter == nullptr ||
-        cudaResources.trainingSample == nullptr || cudaResources.trainingSampleCounter == nullptr)
+    if (mCudaResources.train_query == nullptr || mCudaResources.train_query_cnt == nullptr ||
+        mCudaResources.train_sample == nullptr || mCudaResources.train_sample_cnt == nullptr)
     {
         std::cerr << "[ERROR] : NRCInterface::trainFrame -> train resources is Empty!\n";
         exit(-1);
     }
-    nrc_Net_ref->nrc_train(
-        cudaResources.trainingQuery,
-        cudaResources.trainingQueryCounter,
-        self_queriy_cnt,
-        cudaResources.trainingSample,
-        cudaResources.trainingSampleCounter,
+    nrc_network_ref->nrc_train(
+        mCudaResources.train_query,
+        mCudaResources.train_query_cnt,
+        mCudaResources.train_sample,
+        mCudaResources.train_sample_cnt,
         loss,
         shuffle
     );
 
     mStats.n_frames++;
-    mStats.training_loss_avg = mStats.ema_factor * mStats.training_loss_avg + (1 - mStats.ema_factor) * loss;
+    mStats.train_loss_avg = mStats.ema_factor * mStats.train_loss_avg + (1 - mStats.ema_factor) * loss;
 }
 
-void NRCInterface::trainSampleFrame(uint32_t train_cnt, bool shuffle)
+void NRCInterface::trainSimple(uint32_t train_cnt, bool shuffle)
 {
     float loss;
-    if (cudaResources.trainingSample == nullptr || cudaResources.trainingSampleCounter == nullptr)
+    if (mCudaResources.train_sample == nullptr || mCudaResources.train_sample_cnt == nullptr)
     {
         std::cerr << "[ERROR] : NRCInterface::trainFrame -> train resources is Empty!\n";
         exit(-1);
     }
 
-    nrc_Net_ref->nrc_train(cudaResources.trainingSample, cudaResources.trainingSampleCounter, loss, shuffle);
+    nrc_network_ref->nrc_train_simple(mCudaResources.train_sample, mCudaResources.train_sample_cnt, loss, shuffle);
     mStats.n_frames++;
-    mStats.training_loss_avg = mStats.ema_factor * mStats.training_loss_avg + (1 - mStats.ema_factor) * loss;
+    mStats.train_loss_avg = mStats.ema_factor * mStats.train_loss_avg + (1 - mStats.ema_factor) * loss;
 }
 
-void NRCInterface::inferenceFrame(uint32_t infer_cnt, bool useRF)
+void NRCInterface::inference(uint32_t infer_cnt, bool useRF)
 {
-    nrc_Net_ref->nrc_inference(
-        cudaResources.screenQuery,
-        cudaResources.inferenceQueryPixel,
-        cudaResources.inferenceCounter,
-        infer_cnt,
-        cudaResources.screenResult,
+    nrc_network_ref->nrc_inference(
+        mCudaResources.screen_query,
+        mCudaResources.infer_cnt,
+        mCudaResources.infer_query_pixel,
+        mCudaResources.screen_result,
         useRF
     );
 }
 
-void NRCInterface::printStats()
+void NRCInterface::log()
 {
     std::stringstream ss;
     Falcor::logInfo(ss.str());
@@ -113,10 +112,10 @@ void NRCInterface::printStats()
 void NRCInterface::reset()
 {
     printf("[clear]--------------------------------------------------------------------------\n");
-    nrc_Net_ref->reset();
+    nrc_network_ref->reset();
 }
 
-void NRCInterface::registerNRCResources(
+void NRCInterface::mapResources(
     Falcor::ref<Falcor::Buffer> pScreenQueryBuffer,
     Falcor::ref<Falcor::Buffer> pTrainingQueryBuffer,
     Falcor::ref<Falcor::Buffer> pTrainingSampleBuffer,
@@ -125,26 +124,21 @@ void NRCInterface::registerNRCResources(
     Falcor::ref<Falcor::Texture> pScreenResultTexture
 )
 {
-    if (this == nullptr)
-    {
-        Falcor::logWarning("this is Empty!\n");
-        exit(-1);
-    }
     if (pScreenResultTexture.get() == nullptr)
     {
         Falcor::logWarning("pScreenResultTexture is Empty!\n");
         exit(-1);
     }
-    cudaResources.screenResult = Falcor::cuda_utils::mapTextureToSurface(pScreenResultTexture, cudaArrayColorAttachment);
-    cudaResources.screenQuery = (NRC::inputBase*)pScreenQueryBuffer.get()->getCudaMemory()->getMappedData();
-    cudaResources.trainingQuery = (NRC::inputBase*)pTrainingQueryBuffer.get()->getCudaMemory()->getMappedData();
-    cudaResources.trainingSample = (NRC::trainSample*)pTrainingSampleBuffer.get()->getCudaMemory()->getMappedData();
-    cudaResources.inferenceQueryPixel = (uint2*)pInferenceRadiancePixel.get()->getCudaMemory()->getMappedData();
+    mCudaResources.screen_result = Falcor::cuda_utils::mapTextureToSurface(pScreenResultTexture, cudaArrayColorAttachment);
+    mCudaResources.screen_query = (MININRC::inputBase*)pScreenQueryBuffer.get()->getCudaMemory()->getMappedData();
+    mCudaResources.train_query = (MININRC::inputBase*)pTrainingQueryBuffer.get()->getCudaMemory()->getMappedData();
+    mCudaResources.train_sample = (MININRC::trainSample*)pTrainingSampleBuffer.get()->getCudaMemory()->getMappedData();
+    mCudaResources.infer_query_pixel = (uint2*)pInferenceRadiancePixel.get()->getCudaMemory()->getMappedData();
     uint32_t* counterBuffer = (uint32_t*)pSharedCounterBuffer.get()->getCudaMemory()->getMappedData();
-    cudaResources.counterBufferPtr = counterBuffer;
-    cudaResources.trainingSampleCounter = &counterBuffer[0];
-    cudaResources.inferenceCounter = &counterBuffer[1];
-    cudaResources.trainingQueryCounter = &counterBuffer[2];
+    mCudaResources.counter_buffer_ptr = counterBuffer;
+    mCudaResources.train_sample_cnt = &counterBuffer[0];
+    mCudaResources.infer_cnt = &counterBuffer[1];
+    mCudaResources.train_query_cnt = &counterBuffer[2];
 }
 
 } // namespace NRC

@@ -71,6 +71,7 @@ cbuffer CB
     uint gPRNGDimension;
     uint gWidth;
     uint gHeight;
+    uint RADNDIVID;
     bool enableNRCTrain;
     bool enableSelfQuery;
 }
@@ -83,7 +84,7 @@ Texture2D<float4> gViewW; // Optional
 RWTexture2D<float4> gOutputColor;
 
 // 记录训练的光线的所有信息
-static NRC::PathVertexRecord hitRecords[NRC_MAX_TRAINING_BOUNCES + 1];
+static MININRC::PathVertexRecord hitRecords[NRC_MAX_TRAINING_BOUNCES + 1];
 static bool trainSuffix = false;
 static uint train_idx;
 static ShadingData lastSD;
@@ -351,7 +352,7 @@ void handleHit(const HitInfo hit, inout ScatterRayData rayData)
     }
     if (trainSuffix && rayData.pathLength >= NRC_MAX_TRAINING_BOUNCES)
     {
-        train_idx = NRC::addTrainingQuery(sd);
+        train_idx = MININRC::addTrainingQuery(sd);
         rayData.terminated = true;
         return;
     }
@@ -381,7 +382,7 @@ void handleHit(const HitInfo hit, inout ScatterRayData rayData)
     // collect train dataset
     if (trainSuffix)
     {
-        hitRecords[rayData.pathLength + 1] = NRC::recordNode(sd, rayData.radiance, rayData.thp);
+        hitRecords[rayData.pathLength + 1] = MININRC::recordNode(sd, rayData.radiance, rayData.thp);
     }
     // Generate scatter ray for the next path segment.
     // The raygen shader will continue the path based on the returned payload.
@@ -389,7 +390,7 @@ void handleHit(const HitInfo hit, inout ScatterRayData rayData)
     {
         if (trainSuffix)
         {
-            train_idx = NRC::addTrainingQuery(sd);
+            train_idx = MININRC::addTrainingQuery(sd);
         }
         rayData.terminated = true;
         return;
@@ -468,13 +469,13 @@ float3 tracePathWithNRC(const uint2 pixel, const uint2 frameDim)
         {
             // if (trainSuffix)
             // {
-            //     train_idx = NRC::addTrainingQuery(sd);
+            //     train_idx = MININRC::addTrainingQuery(sd);
             // }
             rayData.terminated = true;
         }
         if (trainSuffix)
         {
-            hitRecords[0] = NRC::recordNode(sd, outColor, float3(1.0, 1.0, 1.0));
+            hitRecords[0] = MININRC::recordNode(sd, outColor, float3(1.0, 1.0, 1.0));
         }
         uint depth = 0;
         for (depth = 0; depth <= NRC_MAX_INFERENCE_BOUNCES && !rayData.terminated; depth++)
@@ -482,7 +483,7 @@ float3 tracePathWithNRC(const uint2 pixel, const uint2 frameDim)
             traceScatterRay(rayData);
         }
         outColor += rayData.radiance;
-        NRC::writeScreenInferenceQuery(pixel, lastSD, outColor, lastTHP);
+        MININRC::writeInferQuery(pixel, lastSD, outColor, lastTHP);
         if (trainSuffix)
         {
             uint depth_train = 0;
@@ -494,27 +495,27 @@ float3 tracePathWithNRC(const uint2 pixel, const uint2 frameDim)
             {
                 for (uint i = 1; i < depth_train; i++)
                 {
-                    float3 radiance = NRC::safe_div((rayData.radiance - hitRecords[i - 1].L), hitRecords[i - 1].thp);
+                    float3 radiance = MININRC::safe_div((rayData.radiance - hitRecords[i - 1].L), hitRecords[i - 1].thp);
                     float3 thp = hitRecords[i].thp;
                     if (i == depth_train - 1)
                     {
-                        NRC::addTrainingSample(radiance, lastTHP, hitRecords[i].query, train_idx);
+                        MININRC::addTrainingSample(radiance, lastTHP, hitRecords[i].record, train_idx);
                     }
                     else
                     {
-                        NRC::addTrainingSample(radiance, thp, hitRecords[i].query, -1);
+                        MININRC::addTrainingSample(radiance, thp, hitRecords[i].record, -1);
                     }
                 }
             }
             // outColor = float3(0.0, 1.0, 1.0);
-            NRC::addTrainingSample(outColor, float3(1.0, 1.0, 1.0), NRC::generateQuery(sd), pixel.x * gWidth + pixel.y);
+            MININRC::addTrainingSample(outColor, float3(1.0, 1.0, 1.0), MININRC::generateQuery(sd), pixel.x * gWidth + pixel.y);
         }
     }
     else
     {
         // Background pixel.
         outColor = kUseEnvBackground ? gScene.envMap.eval(primaryRayDir) : kDefaultBackgroundColor;
-        NRC::writeScreenInferenceQuery(pixel, lastSD, outColor, lastTHP);
+        MININRC::writeInferQuery(pixel, lastSD, outColor, lastTHP);
     }
     // return float3(0.0, 0.0, 0.0);
     return outColor;
@@ -538,7 +539,7 @@ void scatterMiss(inout ScatterRayData rayData)
         if (trainSuffix)
         {
             ShadingData sd;
-            hitRecords[rayData.pathLength + 1] = NRC::recordNode(sd, rayData.radiance, rayData.thp);
+            hitRecords[rayData.pathLength + 1] = MININRC::recordNode(sd, rayData.radiance, rayData.thp);
         }
     }
 }
@@ -673,7 +674,7 @@ void rayGen()
     LCG lcg = createLCG(pixel.x * gWidth + pixel.y + gFrameCount);
     uint randnum = nextRandom(lcg);
     // 4294967295 * 0.04 =  171,798,692
-    if (randnum < 171798691)
+    if (randnum < RADNDIVID)
     {
         trainSuffix = true;
         train_idx = -1;

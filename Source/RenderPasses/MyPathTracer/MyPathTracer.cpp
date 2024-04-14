@@ -28,6 +28,7 @@
 #include "MyPathTracer.h"
 #include <cstdint>
 #include "Core/API/FBO.h"
+#include "Core/API/Formats.h"
 #include "Core/Object.h"
 #include "RenderGraph/RenderPassHelpers.h"
 #include "RenderGraph/RenderPassStandardFlags.h"
@@ -95,8 +96,8 @@ MyPathTracer::MyPathTracer(ref<Device> pDevice, const Properties& props) : Rende
     // Create a sample generator.
     mpSampleGenerator = SampleGenerator::create(mpDevice, SAMPLE_GENERATOR_UNIFORM);
     // mNRC = FALCOR_ASSERT(mpSampleGenerator);
-    mNRC.pNRC = std::make_shared<NRC::NRCInterface>(pDevice);
-    mNRC.pNetwork = mNRC.pNRC->nrc_Net_ref;
+    mNRC.pNRC = std::make_shared<MININRC::NRCInterface>(pDevice);
+    mNRC.pNetwork = mNRC.pNRC->getNetworkSPtr();
     if (mNRC.pNRC == nullptr || mNRC.pNetwork == nullptr)
     {
         logWarning("ERROR : NRC network init failed!\n");
@@ -119,30 +120,35 @@ void MyPathTracer::initNRC(ref<Device> pDevice, Falcor::uint2 targetDim)
     int mMaxTrainBounces = 0;
     // buffer
     mNRC.pTrainingRadianceQuery = mpDevice->createStructuredBuffer(
-        sizeof(NRC::inputBase),
-        NRC::max_training_query_size,
+        sizeof(MININRC::inputBase),
+        MININRC::max_train_query_size,
         Falcor::ResourceBindFlags::Shared | Falcor::ResourceBindFlags::ShaderResource | Falcor::ResourceBindFlags::UnorderedAccess
     );
     mNRC.pTrainingtrainSample = mpDevice->createStructuredBuffer(
-        sizeof(NRC::trainSample),
-        NRC::max_training_sample_size,
+        sizeof(MININRC::trainSample),
+        MININRC::max_train_sample_size,
+        Falcor::ResourceBindFlags::Shared | Falcor::ResourceBindFlags::ShaderResource | Falcor::ResourceBindFlags::UnorderedAccess
+    );
+    mNRC.pTmpPathRecord = mpDevice->createStructuredBuffer(
+        sizeof(MININRC::inputBase),
+        MININRC::max_train_sample_size,
         Falcor::ResourceBindFlags::Shared | Falcor::ResourceBindFlags::ShaderResource | Falcor::ResourceBindFlags::UnorderedAccess
     );
     mNRC.pInferenceRadianceQuery = mpDevice->createStructuredBuffer(
-        sizeof(NRC::inputBase),
-        NRC::max_inference_query_size,
+        sizeof(MININRC::inputBase),
+        MININRC::max_infer_query_size,
         Falcor::ResourceBindFlags::Shared | Falcor::ResourceBindFlags::ShaderResource | Falcor::ResourceBindFlags::UnorderedAccess
     );
     mNRC.pInferenceRadiancePixel = mpDevice->createStructuredBuffer(
         sizeof(Falcor::uint2),
-        NRC::max_inference_query_size,
+        MININRC::max_infer_query_size,
         Falcor::ResourceBindFlags::Shared | Falcor::ResourceBindFlags::ShaderResource | Falcor::ResourceBindFlags::UnorderedAccess
     );
     mNRC.pSharedCounterBuffer = mpDevice->createStructuredBuffer(
         sizeof(uint32_t), 4, Falcor::ResourceBindFlags::Shared | Falcor::ResourceBindFlags::UnorderedAccess
     );
-    if (mNRC.pTrainingRadianceQuery == nullptr || mNRC.pTrainingtrainSample == nullptr || mNRC.pInferenceRadianceQuery == nullptr ||
-        mNRC.pInferenceRadiancePixel == nullptr || mNRC.pSharedCounterBuffer == nullptr)
+    if (mNRC.pTrainingRadianceQuery == nullptr || mNRC.pTrainingtrainSample == nullptr || mNRC.pTmpPathRecord == nullptr ||
+        mNRC.pInferenceRadianceQuery == nullptr || mNRC.pInferenceRadiancePixel == nullptr || mNRC.pSharedCounterBuffer == nullptr)
     {
         logWarning("pNRC buffer alloc failed");
         exit(-1);
@@ -181,7 +187,7 @@ void MyPathTracer::initNRC(ref<Device> pDevice, Falcor::uint2 targetDim)
         exit(-1);
     }
 
-    mNRC.pNRC->registerNRCResources(
+    mNRC.pNRC->mapResources(
         mNRC.pInferenceRadianceQuery,
         mNRC.pTrainingRadianceQuery,
         mNRC.pTrainingtrainSample,
@@ -320,6 +326,7 @@ void MyPathTracer::execute(RenderContext* pRenderContext, const RenderData& rend
 #endif
     pRenderContext->clearUAVCounter(mNRC.pTrainingRadianceQuery, 0);
     pRenderContext->clearUAVCounter(mNRC.pTrainingtrainSample, 0);
+    pRenderContext->clearUAVCounter(mNRC.pTmpPathRecord, 0);
     pRenderContext->clearUAVCounter(mNRC.pInferenceRadianceQuery, 0);
     pRenderContext->clearUAVCounter(mNRC.pInferenceRadiancePixel, 0);
 
@@ -337,8 +344,10 @@ void MyPathTracer::execute(RenderContext* pRenderContext, const RenderData& rend
     var["CB"]["gHeight"] = targetDim.y;
     var["CB"]["enableNRCTrain"] = mNRC.enableNRCTrain;
     var["CB"]["enableSelfQuery"] = mNRC.enableSelfQuery;
+    var["CB"]["RADNDIVID"] = mNRC.rand_ctrl;
     var["gTrainingRadianceQuery"] = mNRC.pTrainingRadianceQuery;
     var["gTrainingtrainSample"] = mNRC.pTrainingtrainSample;
+    var["gTmpPathRecord"] = mNRC.pTmpPathRecord;
     var["gInferenceRadianceQuery"] = mNRC.pInferenceRadianceQuery;
     var["gInferenceRadiancePixel"] = mNRC.pInferenceRadiancePixel;
     var["gScreenQueryFactor"] = mNRC.pScreenQueryFactor;
@@ -392,7 +401,27 @@ void MyPathTracer::execute(RenderContext* pRenderContext, const RenderData& rend
         pRenderContext->copyBufferRegion(mNRC.pSharedCounterBuffer.get(), 0, mNRC.pTrainingtrainSample->getUAVCounter().get(), 0, 4);
         pRenderContext->copyBufferRegion(mNRC.pSharedCounterBuffer.get(), 4, mNRC.pInferenceRadianceQuery->getUAVCounter().get(), 0, 4);
         pRenderContext->copyBufferRegion(mNRC.pSharedCounterBuffer.get(), 8, mNRC.pTrainingRadianceQuery->getUAVCounter().get(), 0, 4);
+        pRenderContext->copyBufferRegion(mNRC.pSharedCounterBuffer.get(), 12, mNRC.pTmpPathRecord->getUAVCounter().get(), 0, 4);
         auto element = mNRC.pSharedCounterBuffer->getElements<uint32_t>(0, 4);
+        mNRC.pNetwork->copyCountToHost(element);
+
+        printf("laset rand control = %u ", mNRC.rand_ctrl);
+        // > 65535 too more train 4294967295 * 0.00001 =
+        uint tmpTrainCnt = mNRC.pNetwork->nrc_counter.train_sample_cnt;
+        if(tmpTrainCnt > 65535 + 1000) {
+            if(tmpTrainCnt - 65535 > 100000)
+            {
+                mNRC.rand_ctrl -= 4294967;
+            } else {
+                mNRC.rand_ctrl -= 429496;
+            }
+        } else {
+            mNRC.rand_ctrl += 42949672;
+        }
+        if(mNRC.rand_ctrl > 214748364)
+            mNRC.rand_ctrl = 4294967295 * 0.04;
+        printf("new rand control = %d \n", mNRC.rand_ctrl);
+
 #ifdef LOG
         for (uint32_t i = 0; i < element.size(); i++)
         {
@@ -408,11 +437,11 @@ void MyPathTracer::execute(RenderContext* pRenderContext, const RenderData& rend
 #endif
             if (mNRC.enableSelfQuery)
             {
-                mNRC.pNRC->trainFrame(element[0], element[2], mNRC.enableShuffleTrain);
+                mNRC.pNRC->train(element[0], element[2], mNRC.enableShuffleTrain);
             }
             else
             {
-                mNRC.pNRC->trainSampleFrame(element[0], mNRC.enableShuffleTrain);
+                mNRC.pNRC->trainSimple(element[0], mNRC.enableShuffleTrain);
             }
             cudaDeviceSynchronize();
         }
@@ -426,7 +455,7 @@ void MyPathTracer::execute(RenderContext* pRenderContext, const RenderData& rend
 #ifdef LOG
         logInfo("[NRC log] :inference stage");
 #endif
-        mNRC.pNRC->inferenceFrame(element[1], mNRC.enableReflectanceFactorization);
+        mNRC.pNRC->inference(element[1], mNRC.enableReflectanceFactorization);
         cudaDeviceSynchronize();
         //
         auto Compositevar = mCompositePass->getRootVar();

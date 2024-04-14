@@ -7,7 +7,7 @@
 #include "Utils/CudaUtils.h"
 #include "Utils/Logger.h"
 
-namespace NRC
+namespace MININRC
 {
 
 class NRCInterface
@@ -15,52 +15,74 @@ class NRCInterface
 public:
     NRCInterface(Falcor::ref<Falcor::Device> pDevice);
     ~NRCInterface();
-
-    void trainFrame(uint32_t train_cnt, uint32_t self_queriy_cnt, bool shuffle);
-
-    void trainSampleFrame(uint32_t train_cnt, bool shuffle);
-
-    void inferenceFrame(uint32_t infer_cnt, bool useRF);
-
-    void printStats();
-
+    /**
+     * @brief Call the train function
+     */
+    void train(uint32_t train_cnt, uint32_t self_queriy_cnt, bool shuffle);
+    /**
+     * @brief Call the simple train function
+     */
+    void trainSimple(uint32_t train_cnt, bool shuffle);
+    /**
+     * @brief Call the inference function
+     */
+    void inference(uint32_t infer_cnt, bool useRF);
+    /**
+     * @brief log some message
+     */
+    void log();
+    /**
+     * @brief reset network
+     */
     void reset();
-
-    void registerNRCResources(
+    /**
+     * @brief map shader resources to cuda resources
+     */
+    void mapResources(
         Falcor::ref<Falcor::Buffer> pScreenQueryBuffer,
-        Falcor::ref<Falcor::Buffer> pTrainingQueryBuffer,
-        Falcor::ref<Falcor::Buffer> pTrainingSampleBuffer,
+        Falcor::ref<Falcor::Buffer> pTrainQueryBuffer,
+        Falcor::ref<Falcor::Buffer> pTrainSampleBuffer,
         Falcor::ref<Falcor::Buffer> pSharedCounterBuffer,
-        Falcor::ref<Falcor::Buffer> pInferenceRadiancePixel,
+        Falcor::ref<Falcor::Buffer> pInferRadiancePixel,
         Falcor::ref<Falcor::Texture> pScreenResultTexture
     );
-
+    /**
+     * @brief get device message
+     */
     auto getDevice() -> Falcor::ref<Falcor::Device> { return pDevice; }
+    /**
+     *
+     */
+    std::shared_ptr<NRCNetwork> getNetworkSPtr()
+    {
+        std::shared_ptr<NRCNetwork> tmp = nrc_network_ref;
+        return tmp;
+    }
 
-    std::shared_ptr<NRCNetwork> nrc_Net_ref;
+private:
+    std::shared_ptr<NRCNetwork> nrc_network_ref;
     Falcor::ref<Falcor::Device> pDevice;
 
     struct
     {
         int n_frames = 0;
-        float training_loss_avg = 0; // EMA
+        float train_loss_avg = 0; // EMA
         const float ema_factor = 0.8f;
-        const int print_every = 100;
     } mStats;
 
-    // register interop texture/surface here
+    // shader resource to cuda resource
     struct
     {
         // cuda device pointers in unified memory space.
-        NRC::inputBase* screenQuery = nullptr;
-        cudaSurfaceObject_t screenResult; // write inferenced results here
-        NRC::inputBase* trainingQuery = nullptr;
-        NRC::trainSample* trainingSample = nullptr;
-        ::uint2* inferenceQueryPixel = nullptr;
-        uint32_t* counterBufferPtr = nullptr;
-        uint32_t* trainingQueryCounter = nullptr;
-        uint32_t* trainingSampleCounter = nullptr;
-        uint32_t* inferenceCounter = nullptr;
-    } cudaResources;
+        MININRC::inputBase* screen_query = nullptr;
+        MININRC::inputBase* train_query = nullptr;
+        MININRC::trainSample* train_sample = nullptr;
+        ::uint2* infer_query_pixel = nullptr;
+        uint32_t* counter_buffer_ptr = nullptr;
+        uint32_t* train_query_cnt = nullptr;
+        uint32_t* train_sample_cnt = nullptr;
+        uint32_t* infer_cnt = nullptr;
+        cudaSurfaceObject_t screen_result; //results
+    } mCudaResources;
 };
 } // namespace NRC

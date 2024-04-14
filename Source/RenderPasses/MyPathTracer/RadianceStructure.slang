@@ -3,7 +3,7 @@
 #define RADIANCESTRUCTURE
 // #include "Utils/HostDeviceShared.slangh"
 
-namespace NRC
+namespace MININRC
 {
     /**
        Parameter                size           with Encoding
@@ -27,26 +27,17 @@ namespace NRC
         float pad0;
         float3 specular_refl;
         float pad1;
+
     };
 
     struct trainSample
     {
-        inputBase rad;
+        inputBase input;
+        float3 L;
         uint32_t train_idx;
-        float3 radiance;
         float3 thp;
-        float pad0;
+        float pad;
     };
-
-    enum class NRCMode
-    {
-        Result = 1,
-        Radiance = 2,
-        Factor = 3,
-        Bias = 4,
-        Reflectance = 5
-    };
-
 }
 
 #endif

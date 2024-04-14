@@ -28,7 +28,7 @@
 #pragma once
 
 // use LOG
-// #define  LOG
+#define  LOG
 
 #include <memory>
 #include "Falcor.h"
@@ -87,8 +87,8 @@ private:
     // NRC
     struct
     {
-        std::shared_ptr<NRC::NRCInterface> pNRC = nullptr;
-        std::shared_ptr<NRC::NRCNetwork> pNetwork = nullptr;
+        std::shared_ptr<MININRC::NRCInterface> pNRC = nullptr;
+        std::shared_ptr<MININRC::NRCNetwork> pNetwork = nullptr;
 
         bool enableNRC = true;
         bool enableNRCTrain = true;
@@ -100,11 +100,13 @@ private:
         uint mMaxInferBounces = 2;
 
         uint visualizeMode = 0;
+        uint rand_ctrl = 4294967295 * 0.04;
 
         ref<Buffer> pTrainingRadianceQuery = nullptr;
         ref<Buffer> pTrainingtrainSample = nullptr;
         ref<Buffer> pInferenceRadianceQuery = nullptr;
         ref<Buffer> pInferenceRadiancePixel = nullptr;
+        ref<Buffer> pTmpPathRecord = nullptr;
         ref<Buffer> pSharedCounterBuffer = nullptr;
         ref<Texture> pScreenResult = nullptr;
 
