@@ -125,6 +125,11 @@ namespace MININRC
         gScreenQueryBias[pixel] = float4(bias, 1.0f);
     }
 
+    void writeNoNeedInfer(uint2 pixel, float3 bias, float3 thp) {
+        gScreenQueryFactor[pixel] = float4(thp, 1.0f);
+        gScreenQueryBias[pixel] = float4(bias, 1.0f);
+    }
+
     uint addTrainingQuery(ShadingData sd)
     {
         uint idx = gTrainingRadianceQuery.IncrementCounter();

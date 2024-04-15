@@ -502,7 +502,8 @@ float3 tracePathWithNRC(const uint2 pixel, const uint2 frameDim)
         uint hit_record_cnt = 0;
         if (trainSuffix)
         {
-            hitRecords[hit_record_cnt++] = MININRC::recordNode(sd, pixel, outColor, float3(1.0, 1.0, 1.0));
+            // hitRecords[hit_record_cnt++] = MININRC::recordNode(sd, pixel, outColor, float3(1.0, 1.0, 1.0));
+            hitRecords[0] = MININRC::recordNode(sd, pixel, rayData.radiance, float3(1.0, 1.0, 1.0));
         }
         uint depth = 0;
         for (depth = 0; depth <= kMaxInferBounce && !rayData.isTerminated(); depth++)
@@ -520,21 +521,19 @@ float3 tracePathWithNRC(const uint2 pixel, const uint2 frameDim)
             uint record_id = rayData.status >> 8;
             MININRC::writeInferQuery(pixel, record_id, outColor);
         }
-        else if (rayData.isHitMiss())
-        {
-            // TODO : is this right?
-            MININRC::writeInferQuery(pixel, sd, outColor, lastTHP);
-            // MININRC::writeInferQuery(pixel, sd, rayData.radiance, lastTHP);
-        }
         else
-        {}
+        {
+            MININRC::writeNoNeedInfer(pixel, outColor, float3(0.0f,0.0f,0.0f));
+        }
+        // else if (rayData.isHitMiss())
+        // {
+        //     // TODO : is this right?
+        //     // MININRC::writeInferQuery(pixel, sd, outColor, lastTHP);
+        //     // MININRC::writeInferQuery(pixel, sd, rayData.radiance, lastTHP);
+        // }
 
         if (trainSuffix)
         {
-            if (rayData.isOverLength()) {
-                // rayData.status &= 0xfffffffe;
-                rayData.status -= 1;
-            }
             uint depth_train = 0;
             for (depth_train = depth - 1; depth_train <= kMaxtrainBounce && !rayData.isTerminated(); depth_train++)
             {
@@ -548,7 +547,7 @@ float3 tracePathWithNRC(const uint2 pixel, const uint2 frameDim)
                 {
                     float3 radiance = MININRC::safe_div((rayData.radiance - hitRecords[i - 1].L), hitRecords[i - 1].thp);
                     float3 thp = hitRecords[i].thp;
-                    if (i == depth_train - 1)
+                    if (i == rayData.pathLength - 1)
                     {
                         MININRC::addTrainingSample(radiance, lastTHP, hitRecords[i].record, train_idx);
                     }
@@ -565,7 +564,7 @@ float3 tracePathWithNRC(const uint2 pixel, const uint2 frameDim)
     {
         // Background pixel.
         outColor = kUseEnvBackground ? gScene.envMap.eval(primaryRayDir) : kDefaultBackgroundColor;
-        MININRC::writeInferQuery(pixel, lastSD, outColor, lastTHP);
+        MININRC::writeNoNeedInfer(pixel, outColor, float3(0.0f, 0.0f, 0.0f));
     }
     return outColor;
 }

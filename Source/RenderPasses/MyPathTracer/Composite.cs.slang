@@ -25,10 +25,12 @@ void main(uint3 dispatchThreadId: SV_DispatchThreadID)
     switch (view)
     {
     case viewMode::DEFAULT:
-        output[pixel] = factor[pixel] * radiance[pixel] + bias[pixel];
+        // output[pixel] = factor[pixel] * radiance[pixel] + bias[pixel];
+        output[pixel] = factor[pixel] * radiance[pixel] + output[pixel];
         break;
     case viewMode::NOT_REFERENCE:
         output[pixel] = bias[pixel];
+        // output[pixel] = output[pixel];
         break;
     case viewMode::ONLY_REFERENCE:
         output[pixel] = radiance[pixel];
