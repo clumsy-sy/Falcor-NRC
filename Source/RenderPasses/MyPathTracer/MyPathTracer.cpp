@@ -129,9 +129,10 @@ void MyPathTracer::initNRC(ref<Device> pDevice, Falcor::uint2 targetDim)
         MININRC::max_train_sample_size,
         Falcor::ResourceBindFlags::Shared | Falcor::ResourceBindFlags::ShaderResource | Falcor::ResourceBindFlags::UnorderedAccess
     );
+    // we need record the last hit point
     mNRC.pTmpPathRecord = mpDevice->createStructuredBuffer(
         sizeof(MININRC::inputBase),
-        MININRC::max_train_sample_size,
+        MININRC::max_train_sample_size + MININRC::max_infer_query_size,
         Falcor::ResourceBindFlags::Shared | Falcor::ResourceBindFlags::ShaderResource | Falcor::ResourceBindFlags::UnorderedAccess
     );
     mNRC.pInferenceRadianceQuery = mpDevice->createStructuredBuffer(
@@ -344,7 +345,7 @@ void MyPathTracer::execute(RenderContext* pRenderContext, const RenderData& rend
     var["CB"]["gHeight"] = targetDim.y;
     var["CB"]["enableNRCTrain"] = mNRC.enableNRCTrain;
     var["CB"]["enableSelfQuery"] = mNRC.enableSelfQuery;
-    var["CB"]["RADNDIVID"] = mNRC.rand_ctrl;
+    var["CB"]["RADNDIVID"] = mNRC.train_ctrl.rand_ctrl;
     var["gTrainingRadianceQuery"] = mNRC.pTrainingRadianceQuery;
     var["gTrainingtrainSample"] = mNRC.pTrainingtrainSample;
     var["gTmpPathRecord"] = mNRC.pTmpPathRecord;
@@ -404,23 +405,29 @@ void MyPathTracer::execute(RenderContext* pRenderContext, const RenderData& rend
         pRenderContext->copyBufferRegion(mNRC.pSharedCounterBuffer.get(), 12, mNRC.pTmpPathRecord->getUAVCounter().get(), 0, 4);
         auto element = mNRC.pSharedCounterBuffer->getElements<uint32_t>(0, 4);
         mNRC.pNetwork->copyCountToHost(element);
-
-        printf("laset rand control = %u ", mNRC.rand_ctrl);
+#ifdef LOG
+        printf("laset rand control = %u ", mNRC.train_ctrl.rand_ctrl);
+#endif
         // > 65535 too more train 4294967295 * 0.00001 =
         uint tmpTrainCnt = mNRC.pNetwork->nrc_counter.train_sample_cnt;
-        if(tmpTrainCnt > 65535 + 1000) {
-            if(tmpTrainCnt - 65535 > 100000)
-            {
-                mNRC.rand_ctrl -= 4294967;
-            } else {
-                mNRC.rand_ctrl -= 429496;
-            }
-        } else {
-            mNRC.rand_ctrl += 42949672;
-        }
-        if(mNRC.rand_ctrl > 214748364)
-            mNRC.rand_ctrl = 4294967295 * 0.04;
-        printf("new rand control = %d \n", mNRC.rand_ctrl);
+        // if(tmpTrainCnt > 65535 + 1000) {
+        //     if(tmpTrainCnt - 65535 > 100000)
+        //     {
+        //         mNRC.train_ctrl.rand_ctrl -= 4294967;
+        //     } else {
+        //         mNRC.train_ctrl.rand_ctrl -= 429496;
+        //     }
+        // } else {
+        //     mNRC.train_ctrl.rand_ctrl += 42949672;
+        // }
+        // if(mNRC.train_ctrl.rand_ctrl > 429496729)
+        //     mNRC.train_ctrl.rand_ctrl = 4294967295 * 0.04;
+        mNRC.train_ctrl.update(tmpTrainCnt);
+        mNRC.train_ctrl.get_rand_ctrl();
+#ifdef LOG
+        printf("new rand control = %d tmpTrainCnt = %d\n", mNRC.train_ctrl.rand_ctrl, tmpTrainCnt);
+        mNRC.train_ctrl.showParameters();
+#endif
 
 #ifdef LOG
         for (uint32_t i = 0; i < element.size(); i++)

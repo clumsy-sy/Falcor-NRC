@@ -64,7 +64,7 @@ namespace MININRC
     PathVertexRecord recordNode(ShadingData sd, uint2 pixel, float3 radiance, float3 thp)
     {
         inputBase base = generateQuery(sd);
-        uint path_id = pixel.x | (pixel.y << 12);
+        uint path_id = pixel.x | (pixel.y << 8);
         PathVertexRecord record = { base, thp, path_id, radiance, 0 };
         return record;
     }
@@ -74,7 +74,7 @@ namespace MININRC
         float2 thpmap = world_to_latlong_map(thp);
         inputBase base = generateQuery(sd);
         base.pad0 = thpmap.x;
-        base.pad0 = thpmap.y;
+        base.pad1 = thpmap.y;
         gTmpPathRecord[idx] = base;
         return idx;
     }
@@ -83,15 +83,13 @@ namespace MININRC
         inputBase base = gTmpPathRecord[idx];
         float2 thpmap = { base.pad0, base.pad1 };
         float3 thp = latlong_map_to_world(thpmap);
-        base.pad0 = 0.0;
-        base.pad1 = 0.0;
-        uint path_id = pixel.x | (pixel.y << 12);
+        uint path_id = pixel.x | (pixel.y << 8);
         PathVertexRecord record = { base, thp, path_id, radiance, 0 };
         return record;
     }
     PathVertexRecord reconstructPathRecord(uint idx, float3 radiance, float3 thp, uint2 pixel) {
         inputBase base = gTmpPathRecord[idx];
-        uint path_id = pixel.x | (pixel.y << 12);
+        uint path_id = pixel.x | (pixel.y << 8);
         PathVertexRecord record = { base, thp, path_id, radiance, 0 };
         return record;
     }
@@ -105,8 +103,21 @@ namespace MININRC
         gScreenQueryBias[pixel] = float4(bias, 1.0f);
     }
 
-    void writeInferQuery(uint2 pixel, inputBase base, float3 thp, float3 bias)
+    void writeInferQuery(uint2 pixel, inputBase base, float3 bias, float3 thp)
     {
+        uint index = gInferenceRadianceQuery.IncrementCounter();
+        gInferenceRadianceQuery[index] = base;
+        gInferenceRadiancePixel[index] = pixel;
+        gScreenQueryFactor[pixel] = float4(thp, 1.0f);
+        gScreenQueryBias[pixel] = float4(bias, 1.0f);
+    }
+
+    void writeInferQuery(uint2 pixel, uint record_id, float3 bias)
+    {
+        inputBase base = gTmpPathRecord[record_id];
+        float2 thpmap = { base.pad0, base.pad1 };
+        float3 thp = latlong_map_to_world(thpmap);
+
         uint index = gInferenceRadianceQuery.IncrementCounter();
         gInferenceRadianceQuery[index] = base;
         gInferenceRadiancePixel[index] = pixel;
@@ -123,11 +134,13 @@ namespace MININRC
     }
 
 
-    void addTrainingSample(float3 radiance, float3 thp, inputBase query, int num)
+    void addTrainingSample(float3 radiance, float3 thp, inputBase base, int num)
     {
         uint idx = gTrainingtrainSample.IncrementCounter();
         trainSample sample = {};
-        sample.input = query;
+        base.pad0 = 0.0f;
+        base.pad1 = 0.0f;
+        sample.input = base;
         sample.train_idx = num;
         sample.L = radiance;
         sample.thp = thp;

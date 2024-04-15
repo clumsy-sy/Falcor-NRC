@@ -28,7 +28,7 @@
 #pragma once
 
 // use LOG
-#define  LOG
+#define LOG
 
 #include <memory>
 #include "Falcor.h"
@@ -85,6 +85,40 @@ private:
     } mTracer;
 
     // NRC
+    struct train_ray_control
+    {
+        double change_rate = 0.01;
+        double a = 1980 * 1080;
+        double b = 0;
+        double percentage = (double)65536 / a;
+        uint rand_ctrl = 4294967295 * percentage;
+
+        double func(double x) { return a * x + b; }
+
+        double invfunc(double y)
+        {
+            return (y - b) / a;
+        }
+
+        void update(uint y)
+        {
+            double prediction = func(percentage);
+            double delta = prediction - y;
+            a -= change_rate * delta * percentage;
+            b -= change_rate * delta;
+
+            percentage = invfunc(65536);
+        }
+
+        uint get_rand_ctrl()
+        {
+            rand_ctrl = 4294967295 * percentage;
+            return rand_ctrl;
+        }
+
+        void showParameters() { printf("y = %lf * x + %lf; percentage = %lf, expected = %lf\n", a, b, percentage, func(percentage)); }
+    };
+
     struct
     {
         std::shared_ptr<MININRC::NRCInterface> pNRC = nullptr;
@@ -96,11 +130,11 @@ private:
         bool enableShuffleTrain = true;
         bool enableReflectanceFactorization = true;
 
-        uint mMaxTrainBounces = 4; // max path segments for training suffix
-        uint mMaxInferBounces = 2;
+        uint mMaxInferBounces = 1;
+        uint mMaxTrainBounces = 3; // max path segments for training suffix
 
         uint visualizeMode = 0;
-        uint rand_ctrl = 4294967295 * 0.04;
+        train_ray_control train_ctrl;
 
         ref<Buffer> pTrainingRadianceQuery = nullptr;
         ref<Buffer> pTrainingtrainSample = nullptr;
