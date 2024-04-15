@@ -15,7 +15,8 @@ enum viewMode
     NOT_REFERENCE = 1,
     ONLY_REFERENCE = 2,
     ONLY_FACTOR = 3,
-    NRC_vs_NO = 4
+    DIFF = 4,
+    NRC_vs_NO = 5
 }
 
 [numthreads(16, 16, 1)]
@@ -37,6 +38,13 @@ void main(uint3 dispatchThreadId: SV_DispatchThreadID)
         break;
     case viewMode::ONLY_FACTOR:
         output[pixel] = factor[pixel];
+        break;
+    case viewMode::DIFF:
+        if (pixel.x > 990) {
+            output[pixel] = factor[pixel] * radiance[pixel] + output[pixel];
+        } else {
+            output[pixel] = output[pixel];
+        }
         break;
     case viewMode::NRC_vs_NO:
         output[pixel] = factor[pixel] * radiance[pixel];

@@ -75,8 +75,9 @@ enum viewMode
     NOT_REFERENCE = 1,
     ONLY_REFERENCE = 2,
     ONLY_FACTOR = 3,
-    NRC_vs_NO = 4,
-    TEST = 5,
+    DIFF = 4,
+    NRC_vs_NO = 5,
+    TEST = 6,
 };
 
 const Gui::DropdownList kNRCViewModeList = {
@@ -84,7 +85,8 @@ const Gui::DropdownList kNRCViewModeList = {
     {(uint)viewMode::NOT_REFERENCE, "NO NRC"},
     {(uint)viewMode::ONLY_REFERENCE, "ONLY NRC"},
     {(uint)viewMode::ONLY_FACTOR, "ONLY FACTOR"},
-    {(uint)viewMode::NRC_vs_NO, "NRC VS NO"},
+    {(uint)viewMode::DIFF, "DIFF"},
+    {(uint)viewMode::NRC_vs_NO, "NRC VS NO NRC"},
     {(uint)viewMode::TEST, "just for test"},
 };
 

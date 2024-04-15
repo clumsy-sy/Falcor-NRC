@@ -373,6 +373,7 @@ void handleHit(const HitInfo hit, inout ScatterRayData rayData)
         rayData.status &= 0xf;
         rayData.status |= temIdx << 8;
         uint train_id = MININRC::addTrainingQuery(sd);
+        rayData.status &= 0xff;
         rayData.pathLength |= train_id << 8;
         // rayData.terminated = true;
         rayData.status |= 0x1;
@@ -526,7 +527,7 @@ float3 tracePathWithNRC(const uint2 pixel, const uint2 frameDim)
         {
             if (rayData.isOverLength())
             {
-                // rayData.status &= 0xfffffffe
+                // rayData.status &= 0xfffffffe;
                 rayData.status -= 1;
             }
             uint depth_train = 0;
@@ -579,13 +580,13 @@ void scatterMiss(inout ScatterRayData rayData)
     {
         float3 Le = gScene.envMap.eval(WorldRayDirection());
         rayData.radiance += rayData.thp * Le;
-        if (rayData.isTrainSuffix())
-        {
-            ShadingData sd = {};
-            uint temIdx = MININRC::addPathRecord(sd, rayData.thp);
-            rayData.status &= 0xf;
-            rayData.status |= temIdx << 8;
-        }
+        // if (rayData.isTrainSuffix())
+        // {
+        //     ShadingData sd = {};
+        //     uint temIdx = MININRC::addPathRecord(sd, rayData.thp);
+        //     rayData.status &= 0xf;
+        //     rayData.status |= temIdx << 8;
+        // }
     }
 }
 
