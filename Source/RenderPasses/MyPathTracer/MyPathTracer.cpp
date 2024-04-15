@@ -330,6 +330,7 @@ void MyPathTracer::execute(RenderContext* pRenderContext, const RenderData& rend
     pRenderContext->clearUAVCounter(mNRC.pTmpPathRecord, 0);
     pRenderContext->clearUAVCounter(mNRC.pInferenceRadianceQuery, 0);
     pRenderContext->clearUAVCounter(mNRC.pInferenceRadiancePixel, 0);
+    pRenderContext->clearTexture(mNRC.pScreenResult.get());
 
     // Prepare program vars. This may trigger shader compilation.
     // The program should have all necessary defines set at this point.

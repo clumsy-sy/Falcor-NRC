@@ -142,7 +142,7 @@ struct ScatterRayData
         this.direction = float3(0, 0, 0);
         this.sg = sg;
     }
-    bool isTrainSuffix() { return (this.status >> 4 & 1) == 1; }
+    bool isTrainSuffix() { return (this.status >> 3 & 1) == 1; }
     bool isTerminated() { return (this.status & 0x7) >= 1; }
     bool isOverLength() { return (this.status & 0x1) == 1; }
     bool isHitMiss() { return (this.status >> 1 & 0x1) == 1; }
@@ -151,6 +151,7 @@ struct ScatterRayData
     void setHitMiss(ScatterRayData srd) { srd.status |= 0x2; }
     void setNoScatterRay(ScatterRayData srd) { srd.status |= 0x4; }
     void setTrainSuffix(ScatterRayData srd) { srd.status |= 0x8; }
+    uint getPathLength() { return this.pathLength & 0xffff; }
 };
 
 /**
@@ -361,28 +362,26 @@ void handleHit(const HitInfo hit, inout ScatterRayData rayData)
     let mi = gScene.materials.getMaterialInstance(sd, lod);
 
     // Add emitted light.
-    if (kUseEmissiveLights && (kComputeDirect || rayData.pathLength > 0))
+    if (kUseEmissiveLights && (kComputeDirect || rayData.getPathLength() > 0))
     {
         rayData.radiance += rayData.thp * mi.getProperties(sd).emission;
     }
-    // collect train dataset
-    // if (rayData.isTrainSuffix())
-    // {
-    //     uint temIdx = MININRC::addPathRecord(sd, rayData.thp);
-    //     rayData.status |= temIdx << 8;
-    // }
-    if (rayData.isTrainSuffix() && rayData.pathLength >= kMaxtrainBounce)
+
+    if (rayData.isTrainSuffix() && rayData.getPathLength() >= kMaxtrainBounce)
     {
         uint temIdx = MININRC::addPathRecord(sd, rayData.thp);
+        rayData.status &= 0xf;
         rayData.status |= temIdx << 8;
-        train_idx = MININRC::addTrainingQuery(sd);
+        uint train_id = MININRC::addTrainingQuery(sd);
+        rayData.pathLength |= train_id << 8;
         // rayData.terminated = true;
         rayData.status |= 0x1;
         return;
     }
-    else if (rayData.pathLength >= kMaxInferBounce)
+    if (rayData.getPathLength() >= kMaxInferBounce)
     {
         uint temIdx = MININRC::addPathRecord(sd, rayData.thp);
+        rayData.status &= 0xf;
         rayData.status |= temIdx << 8;
         // rayData.terminated = true;
         rayData.status |= 0x1;
@@ -410,16 +409,13 @@ void handleHit(const HitInfo hit, inout ScatterRayData rayData)
     if (rayData.isTrainSuffix())
     {
         uint temIdx = MININRC::addPathRecord(sd, rayData.thp);
+        rayData.status &= 0xf;
         rayData.status |= temIdx << 8;
     }
     // Generate scatter ray for the next path segment.
     // The raygen shader will continue the path based on the returned payload.
     if (!generateScatterRay(sd, mi, isCurveHit, rayOrigin, rayData))
     {
-        if (rayData.isTrainSuffix())
-        {
-            train_idx = MININRC::addTrainingQuery(sd);
-        }
         // rayData.terminated = true;
         rayData.status |= 0x4;
         return;
@@ -512,7 +508,7 @@ float3 tracePathWithNRC(const uint2 pixel, const uint2 frameDim)
             if (trainSuffix)
             {
                 uint record_id = rayData.status >> 8;
-                hitRecords[rayData.pathLength] = MININRC::reconstructPathRecord(record_id, rayData.radiance, pixel);
+                hitRecords[depth] = MININRC::reconstructPathRecord(record_id, rayData.radiance, pixel);
             }
         }
         outColor += rayData.radiance;
@@ -523,33 +519,32 @@ float3 tracePathWithNRC(const uint2 pixel, const uint2 frameDim)
         }
         else
         {
-            MININRC::writeNoNeedInfer(pixel, outColor, float3(0.0f,0.0f,0.0f));
+            MININRC::writeNoNeedInfer(pixel, outColor, float3(0.0f, 0.0f, 0.0f));
         }
-        // else if (rayData.isHitMiss())
-        // {
-        //     // TODO : is this right?
-        //     // MININRC::writeInferQuery(pixel, sd, outColor, lastTHP);
-        //     // MININRC::writeInferQuery(pixel, sd, rayData.radiance, lastTHP);
-        // }
 
         if (trainSuffix)
         {
+            if (rayData.isOverLength())
+            {
+                // rayData.status &= 0xfffffffe
+                rayData.status -= 1;
+            }
             uint depth_train = 0;
             for (depth_train = depth - 1; depth_train <= kMaxtrainBounce && !rayData.isTerminated(); depth_train++)
             {
                 traceScatterRay(rayData);
                 uint record_id = rayData.status >> 8;
-                hitRecords[rayData.pathLength] = MININRC::reconstructPathRecord(record_id, rayData.radiance, pixel);
+                hitRecords[depth_train] = MININRC::reconstructPathRecord(record_id, rayData.radiance, pixel);
             }
             if (depth_train > 0)
             {
-                for (uint i = 1; i < rayData.pathLength; i++)
+                for (uint i = 1; i < rayData.getPathLength(); i++)
                 {
                     float3 radiance = MININRC::safe_div((rayData.radiance - hitRecords[i - 1].L), hitRecords[i - 1].thp);
                     float3 thp = hitRecords[i].thp;
-                    if (i == rayData.pathLength - 1)
+                    if (i == rayData.getPathLength() && rayData.isOverLength())
                     {
-                        MININRC::addTrainingSample(radiance, lastTHP, hitRecords[i].record, train_idx);
+                        MININRC::addTrainingSample(radiance, thp, hitRecords[i].record, train_idx);
                     }
                     else
                     {
@@ -580,7 +575,7 @@ void scatterMiss(inout ScatterRayData rayData)
 
     rayData.status |= 0x2;
     // Add contribution from distant light (env map) in this direction.
-    if (kUseEnvLight && (kComputeDirect || rayData.pathLength > 0))
+    if (kUseEnvLight && (kComputeDirect || rayData.getPathLength() > 0))
     {
         float3 Le = gScene.envMap.eval(WorldRayDirection());
         rayData.radiance += rayData.thp * Le;
@@ -588,6 +583,7 @@ void scatterMiss(inout ScatterRayData rayData)
         {
             ShadingData sd = {};
             uint temIdx = MININRC::addPathRecord(sd, rayData.thp);
+            rayData.status &= 0xf;
             rayData.status |= temIdx << 8;
         }
     }
