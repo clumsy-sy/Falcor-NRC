@@ -30,12 +30,17 @@
 #include "RenderGraph/RenderPassStandardFlags.h"
 #include "Rendering/Lights/EmissiveUniformSampler.h"
 
+#define LOG
+
 namespace
 {
-const std::string kGeneratePathsFilename = "RenderPasses/PathTracer/GeneratePaths.cs.slang";
-const std::string kTracePassFilename = "RenderPasses/PathTracer/TracePass.rt.slang";
-const std::string kResolvePassFilename = "RenderPasses/PathTracer/ResolvePass.cs.slang";
-const std::string kReflectTypesFile = "RenderPasses/PathTracer/ReflectTypes.cs.slang";
+const std::string kGeneratePathsFilename = "RenderPasses/NRCPathTracer/GeneratePaths.cs.slang";
+const std::string kTracePassFilename = "RenderPasses/NRCPathTracer/TracePass.rt.slang";
+const std::string kResolvePassFilename = "RenderPasses/NRCPathTracer/ResolvePass.cs.slang";
+const std::string kReflectTypesFile = "RenderPasses/NRCPathTracer/ReflectTypes.cs.slang";
+// nrc part begin
+const std::string kCompositeShaderFile = "RenderPasses/NRCPathTracer/Combination.cs.slang";
+// nrc part end
 
 // Render pass inputs and outputs.
 const std::string kInputVBuffer = "vbuffer";
@@ -154,6 +159,7 @@ const Falcor::ChannelList kOutputChannels = {
 // Scripting options.
 const std::string kSamplesPerPixel = "samplesPerPixel";
 const std::string kMaxSurfaceBounces = "maxSurfaceBounces";
+const std::string kMaxInferBounces = "maxInferBounces";
 const std::string kMaxDiffuseBounces = "maxDiffuseBounces";
 const std::string kMaxSpecularBounces = "maxSpecularBounces";
 const std::string kMaxTransmissionBounces = "maxTransmissionBounces";
@@ -187,6 +193,35 @@ const std::string kUseSER = "useSER";
 const std::string kOutputSize = "outputSize";
 const std::string kFixedOutputSize = "fixedOutputSize";
 const std::string kColorFormat = "colorFormat";
+
+// nrc part begin
+const std::string kMaxTrainBounces = "maxTrainBounces";
+const std::string kRefreshNRCNetwork = "refreshNRCNetwork";
+const std::string kComputeDirect = "computeDirect";
+const std::string kUseImportanceSampling = "useImportanceSampling";
+const std::string kUseNRCTraining = "useNRCTraining";
+
+enum viewMode
+{
+    DEFAULT = 0,
+    NOT_REFERENCE = 1,
+    ONLY_REFERENCE = 2,
+    ONLY_FACTOR = 3,
+    DIFF = 4,
+    NRC_vs_NO = 5,
+    TEST = 6,
+};
+
+const Gui::DropdownList kNRCViewModeList = {
+    {(uint)viewMode::DEFAULT, "with NRC"},
+    {(uint)viewMode::NOT_REFERENCE, "NO NRC"},
+    {(uint)viewMode::ONLY_REFERENCE, "ONLY NRC"},
+    {(uint)viewMode::ONLY_FACTOR, "ONLY FACTOR"},
+    {(uint)viewMode::DIFF, "DIFF"},
+    {(uint)viewMode::NRC_vs_NO, "NRC VS NO NRC"},
+    {(uint)viewMode::TEST, "just for test"},
+};
+// nrc part end
 } // namespace
 
 extern "C" FALCOR_API_EXPORT void registerPlugin(Falcor::PluginRegistry& registry)
@@ -236,6 +271,17 @@ NRCPathTracer::NRCPathTracer(ref<Device> pDevice, const Properties& props) : Ren
 
     mpPixelStats = std::make_unique<PixelStats>(mpDevice);
     mpPixelDebug = std::make_unique<PixelDebug>(mpDevice);
+
+    // nrc part begin
+    mNRC.mpNRC = std::make_shared<NRC::NRCInterface>(pDevice);
+    mNRC.mpNetwork = mNRC.mpNRC->getNetworkSPtr();
+    if (mNRC.mpNRC == nullptr || mNRC.mpNetwork == nullptr)
+    {
+        logWarning("ERROR : NRC network init failed!\n");
+        exit(-1);
+    }
+    mCompositePass = ComputePass::create(pDevice, kCompositeShaderFile, "main");
+    // nrc part end
 }
 
 void NRCPathTracer::setProperties(const Properties& props)
@@ -259,6 +305,10 @@ void NRCPathTracer::parseProperties(const Properties& props)
             mStaticParams.samplesPerPixel = value;
         else if (key == kMaxSurfaceBounces)
             mStaticParams.maxSurfaceBounces = value;
+        // nrc infer input begin
+        else if (key == kMaxInferBounces)
+            mStaticParams.maxInferBounces = value;
+        // nrc infer input end
         else if (key == kMaxDiffuseBounces)
             mStaticParams.maxDiffuseBounces = value;
         else if (key == kMaxSpecularBounces)
@@ -329,6 +379,10 @@ void NRCPathTracer::parseProperties(const Properties& props)
         else if (key == kColorFormat)
             mStaticParams.colorFormat = value;
 
+        // nrc parameters begin
+        else if (key == kMaxTrainBounces)
+            mNRC.mMaxTrainBounces = value;
+        // nrc parameters end
         else
             logWarning("Unknown property '{}' in PathTracer properties.", key);
     }
@@ -425,6 +479,7 @@ Properties NRCPathTracer::getProperties() const
 
     // Rendering parameters
     props[kSamplesPerPixel] = mStaticParams.samplesPerPixel;
+    props[kMaxInferBounces] = mStaticParams.maxInferBounces;
     props[kMaxSurfaceBounces] = mStaticParams.maxSurfaceBounces;
     props[kMaxDiffuseBounces] = mStaticParams.maxDiffuseBounces;
     props[kMaxSpecularBounces] = mStaticParams.maxSpecularBounces;
@@ -468,20 +523,23 @@ Properties NRCPathTracer::getProperties() const
         props[kFixedOutputSize] = mFixedOutputSize;
     props[kColorFormat] = mStaticParams.colorFormat;
 
+    // nrc parameters begin
+    props[kMaxTrainBounces] = mNRC.mMaxTrainBounces;
+    // nrc parameters end
     return props;
 }
 
 RenderPassReflection NRCPathTracer::reflect(const CompileData& compileData)
 {
     RenderPassReflection reflector;
-    const uint2 sz = RenderPassHelpers::calculateIOSize(mOutputSizeSelection, mFixedOutputSize, compileData.defaultTexDims);
+    const Falcor::uint2 sz = RenderPassHelpers::calculateIOSize(mOutputSizeSelection, mFixedOutputSize, compileData.defaultTexDims);
 
     addRenderPassInputs(reflector, kInputChannels);
     addRenderPassOutputs(reflector, kOutputChannels, ResourceBindFlags::UnorderedAccess, sz);
     return reflector;
 }
 
-void NRCPathTracer::setFrameDim(const uint2 frameDim)
+void NRCPathTracer::setFrameDim(const Falcor::uint2 frameDim)
 {
     auto prevFrameDim = mParams.frameDim;
     auto prevScreenTiles = mParams.screenTiles;
@@ -556,6 +614,11 @@ void NRCPathTracer::execute(RenderContext* pRenderContext, const RenderData& ren
     FALCOR_ASSERT(mpTracePass);
     tracePass(pRenderContext, renderData, *mpTracePass);
 
+    if (mNRC.enableNRC)
+    {
+        mNRC.frameCount++;
+    }
+
     // Launch separate passes to trace delta reflection and transmission paths to generate respective guide buffers.
     if (mOutputNRDAdditionalData)
     {
@@ -580,7 +643,37 @@ void NRCPathTracer::renderUI(Gui::Widgets& widget)
     // Stats and debug options.
     renderStatsUI(widget);
     dirty |= renderDebugUI(widget);
+    // nrc UI begin
+    dirty |= widget.checkbox("Use NRC", mNRC.enableNRC);
+    widget.tooltip("Use Neural Radiance Cache", true);
 
+    if (mNRC.enableNRC)
+    {
+        dirty |= widget.dropdown("view", kNRCViewModeList, mNRC.visualizeMode);
+
+        dirty |= widget.checkbox("Use Reflectance Factorization", mNRC.enableReflectanceFactorization);
+        widget.tooltip("Use ReflectanceFactorization: result = radiance * (diffuse + specular)", true);
+
+        dirty |= widget.checkbox("Use NRC network train", mNRC.enableNRCTrain);
+        widget.tooltip("Use Neural Radiance Network train", true);
+
+        if (mNRC.enableNRCTrain)
+        {
+            dirty |= widget.checkbox("Use NRC network shuffle", mNRC.enableShuffleTrain);
+            widget.tooltip("Use Neural Radiance Network train with shuffle data, better use", true);
+
+            dirty |= widget.checkbox("Use NRC network Self Query", mNRC.enableSelfQuery);
+            widget.tooltip("Use Neural Radiance Network train with Self Query", true);
+        }
+
+        if (widget.button("reset NRC network"))
+        {
+            mNRC.mpNRC->reset();
+            dirty = true;
+        }
+        dirty |= widget.var("Learning rate", mNRC.mpNetwork->getLearningRate(), 0.f, 1e-1f, 1e-5f);
+    }
+    // nrc UI end
     if (dirty)
     {
         validateOptions();
@@ -611,6 +704,11 @@ bool NRCPathTracer::renderRenderingUI(Gui::Widgets& widget)
         mStaticParams.maxDiffuseBounces = std::min(mStaticParams.maxDiffuseBounces, mStaticParams.maxSurfaceBounces);
         mStaticParams.maxSpecularBounces = std::min(mStaticParams.maxSpecularBounces, mStaticParams.maxSurfaceBounces);
         mStaticParams.maxTransmissionBounces = std::min(mStaticParams.maxTransmissionBounces, mStaticParams.maxSurfaceBounces);
+        dirty = true;
+    }
+    if (widget.var("Max Infer bounces", mStaticParams.maxInferBounces, 0u, kMaxBounces))
+    {
+        // Allow users to change the max surface bounce parameter in the UI to clamp all other surface bounce parameters.
         dirty = true;
     }
     widget.tooltip(
@@ -1009,6 +1107,61 @@ void NRCPathTracer::prepareResources(RenderContext* pRenderContext, const Render
             mVarsChanged = true;
         }
     }
+    // nrc texture alloc begin
+    if (mNRC.enableNRC)
+    {
+        // Allocate final output = PT result + network result
+        if (!mNRC.mpScreenResult || mNRC.mpScreenResult->getWidth() != mParams.frameDim.x ||
+            mNRC.mpScreenResult->getHeight() != mParams.frameDim.y)
+        {
+            mNRC.mpScreenResult = mpDevice->createTexture2D(
+                mParams.frameDim.x,
+                mParams.frameDim.y,
+                ResourceFormat::RGBA32Float,
+                1,
+                1,
+                nullptr,
+                Falcor::ResourceBindFlags::Shared | ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess
+            );
+            mVarsChanged = true;
+        }
+        // Allocate factor output whitch is used to multiply nrc network inference
+        if (!mNRC.mpScreenQueryFactor || mNRC.mpScreenQueryFactor->getWidth() != mParams.frameDim.x ||
+            mNRC.mpScreenQueryFactor->getHeight() != mParams.frameDim.y)
+        {
+            mNRC.mpScreenQueryFactor = mpDevice->createTexture2D(
+                mParams.frameDim.x,
+                mParams.frameDim.y,
+                ResourceFormat::RGBA32Float,
+                1,
+                1,
+                nullptr,
+                ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess
+            );
+            mVarsChanged = true;
+        }
+        // Allocate Bias output whitch is the result of PT
+        if (!mNRC.mpScreenQueryBias || mNRC.mpScreenQueryBias->getWidth() != mParams.frameDim.x ||
+            mNRC.mpScreenQueryBias->getHeight() != mParams.frameDim.y)
+        {
+            mNRC.mpScreenQueryBias = mpDevice->createTexture2D(
+                mParams.frameDim.x,
+                mParams.frameDim.y,
+                ResourceFormat::RGBA32Float,
+                1,
+                1,
+                nullptr,
+                ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess
+            );
+            mVarsChanged = true;
+        }
+        if (mNRC.mpScreenResult == nullptr || mNRC.mpScreenQueryFactor == nullptr || mNRC.mpScreenQueryBias == nullptr)
+        {
+            logWarning("NRC texture alloc failed\n");
+            exit(-1);
+        }
+    }
+    // nrc texture alloc end
 
     auto var = mpReflectTypes->getRootVar();
 
@@ -1087,6 +1240,91 @@ void NRCPathTracer::prepareResources(RenderContext* pRenderContext, const Render
         );
         mVarsChanged = true;
     }
+
+    // nrc buffer alloc begin
+    if (mNRC.enableNRC)
+    {
+        if (!mNRC.mpTrainingRadianceQuery || mVarsChanged)
+        {
+            mNRC.mpTrainingRadianceQuery = mpDevice->createStructuredBuffer(
+                sizeof(NRC::inputBase),
+                NRC::max_train_query_size,
+                Falcor::ResourceBindFlags::Shared | Falcor::ResourceBindFlags::ShaderResource | Falcor::ResourceBindFlags::UnorderedAccess
+            );
+        }
+        if (!mNRC.mpTrainingtrainSample || mVarsChanged)
+        {
+            mNRC.mpTrainingtrainSample = mpDevice->createStructuredBuffer(
+                sizeof(NRC::trainSample),
+                NRC::max_train_sample_size,
+                Falcor::ResourceBindFlags::Shared | Falcor::ResourceBindFlags::ShaderResource | Falcor::ResourceBindFlags::UnorderedAccess
+            );
+        }
+        if (!mNRC.mpInferenceRadianceQuery || mVarsChanged)
+        {
+            mNRC.mpInferenceRadianceQuery = mpDevice->createStructuredBuffer(
+                sizeof(NRC::inputBase),
+                NRC::max_infer_query_size,
+                Falcor::ResourceBindFlags::Shared | Falcor::ResourceBindFlags::ShaderResource | Falcor::ResourceBindFlags::UnorderedAccess
+            );
+        }
+        if (!mNRC.mpInferenceRadiancePixel || mVarsChanged)
+        {
+            mNRC.mpInferenceRadiancePixel = mpDevice->createStructuredBuffer(
+                sizeof(Falcor::uint2),
+                NRC::max_infer_query_size,
+                Falcor::ResourceBindFlags::Shared | Falcor::ResourceBindFlags::ShaderResource | Falcor::ResourceBindFlags::UnorderedAccess
+            );
+        }
+        if (!mNRC.mpSharedCounterBuffer || mVarsChanged)
+        {
+            mNRC.mpSharedCounterBuffer = mpDevice->createStructuredBuffer(
+                sizeof(uint32_t), 4, Falcor::ResourceBindFlags::Shared | Falcor::ResourceBindFlags::UnorderedAccess
+            );
+        }
+        if (!mNRC.mpTmpPathRecord || mVarsChanged)
+        {
+            mNRC.mpTmpPathRecord = mpDevice->createStructuredBuffer(
+                sizeof(NRC::inputBase),
+                NRC::max_train_sample_size + NRC::max_infer_query_size,
+                Falcor::ResourceBindFlags::Shared | Falcor::ResourceBindFlags::ShaderResource | Falcor::ResourceBindFlags::UnorderedAccess
+            );
+        }
+        if (mNRC.mpTrainingRadianceQuery == nullptr || mNRC.mpTrainingtrainSample == nullptr || mNRC.mpInferenceRadianceQuery == nullptr ||
+            mNRC.mpInferenceRadiancePixel == nullptr || mNRC.mpSharedCounterBuffer == nullptr || mNRC.mpTmpPathRecord == nullptr)
+        {
+            logWarning("NRC buffer alloc failed\n");
+            exit(-1);
+        }
+        mVarsChanged = true;
+    }
+    // nrc buffer alloc end
+
+    // nrc buffer clear begin
+    if (mNRC.enableNRC)
+    {
+        pRenderContext->clearUAVCounter(mNRC.mpTrainingRadianceQuery, 0);
+        pRenderContext->clearUAVCounter(mNRC.mpTrainingtrainSample, 0);
+        pRenderContext->clearUAVCounter(mNRC.mpInferenceRadianceQuery, 0);
+        pRenderContext->clearUAVCounter(mNRC.mpInferenceRadiancePixel, 0);
+        pRenderContext->clearUAVCounter(mNRC.mpTmpPathRecord, 0);
+        pRenderContext->clearTexture(mNRC.mpScreenResult.get());
+    }
+    // nrc buffer clear end
+
+    // map to cuda resources begin
+    if (mNRC.enableNRC && mNRC.frameCount == 0)
+    {
+        mNRC.mpNRC->mapResources(
+            mNRC.mpInferenceRadianceQuery,
+            mNRC.mpTrainingRadianceQuery,
+            mNRC.mpTrainingtrainSample,
+            mNRC.mpSharedCounterBuffer,
+            mNRC.mpInferenceRadiancePixel,
+            mNRC.mpScreenResult
+        );
+    }
+    // map to cuda resourece end
 }
 
 void NRCPathTracer::preparePathTracer(const RenderData& renderData)
@@ -1323,7 +1561,7 @@ bool NRCPathTracer::beginFrame(RenderContext* pRenderContext, const RenderData& 
     FALCOR_ASSERT(pOutputColor);
 
     // Set output frame dimension.
-    setFrameDim(uint2(pOutputColor->getWidth(), pOutputColor->getHeight()));
+    setFrameDim(Falcor::uint2(pOutputColor->getWidth(), pOutputColor->getHeight()));
 
     // Validate all I/O sizes match the expected size.
     // If not, we'll disable the path tracer to give the user a chance to fix the configuration before re-enabling it.
@@ -1348,7 +1586,7 @@ bool NRCPathTracer::beginFrame(RenderContext* pRenderContext, const RenderData& 
 
     if (mpScene == nullptr || !mEnabled)
     {
-        pRenderContext->clearUAV(pOutputColor->getUAV().get(), float4(0.f));
+        pRenderContext->clearUAV(pOutputColor->getUAV().get(), Falcor::float4(0.f));
 
         // Set refresh flag if changes that affect the output have occured.
         // This is needed to ensure other passes get notified when the path tracer is enabled/disabled.
@@ -1453,7 +1691,7 @@ void NRCPathTracer::endFrame(RenderContext* pRenderContext, const RenderData& re
         }
         else if (pDst)
         {
-            pRenderContext->clearUAV(pDst->getUAV().get(), uint4(0, 0, 0, 0));
+            pRenderContext->clearUAV(pDst->getUAV().get(), Falcor::uint4(0, 0, 0, 0));
         }
     };
 
@@ -1516,6 +1754,13 @@ void NRCPathTracer::tracePass(RenderContext* pRenderContext, const RenderData& r
     tracePass.pProgram->addDefine("OUTPUT_GUIDE_DATA", mOutputGuideData ? "1" : "0");
     tracePass.pProgram->addDefine("OUTPUT_NRD_DATA", mOutputNRDData ? "1" : "0");
     tracePass.pProgram->addDefine("OUTPUT_NRD_ADDITIONAL_DATA", mOutputNRDAdditionalData ? "1" : "0");
+    // Add nrc define
+    tracePass.pProgram->addDefine("ENABLE_NRC", mNRC.enableNRC ? "1" : "0");
+    if (mNRC.enableNRC)
+    {
+        tracePass.pProgram->addDefine("NRC_MAX_TRAINING_BOUNCES", std::to_string(mNRC.mMaxTrainBounces));
+    }
+    // Add nrc define
 
     // Bind global resources.
     auto var = tracePass.pVars->getRootVar();
@@ -1531,9 +1776,93 @@ void NRCPathTracer::tracePass(RenderContext* pRenderContext, const RenderData& r
 
     // Bind the path tracer.
     var["gPathTracer"] = mpPathTracerBlock;
+    // Bind nrc buffer begin
+    if (mNRC.enableNRC)
+    {
+        var["NRCCB"]["gWidth"] = mParams.frameDim.x;
+        var["NRCCB"]["gHeight"] = mParams.frameDim.y;
+        var["NRCCB"]["gFrameCount"] = mNRC.frameCount;
+        var["NRCCB"]["randNum"] = mNRC.train_ctrl.rand_ctrl;
+        var["gTrainingRadianceQuery"] = mNRC.mpTrainingRadianceQuery;
+        var["gTrainingtrainSample"] = mNRC.mpTrainingtrainSample;
+        var["gInferenceRadianceQuery"] = mNRC.mpInferenceRadianceQuery;
+        var["gInferenceRadiancePixel"] = mNRC.mpInferenceRadiancePixel;
+        var["gScreenQueryFactor"] = mNRC.mpScreenQueryFactor;
+        var["gScreenQueryBias"] = mNRC.mpScreenQueryBias;
+        var["gTmpPathRecord"] = mNRC.mpTmpPathRecord;
+    }
+    // Bind nrc buffer end
 
     // Full screen dispatch.
-    mpScene->raytrace(pRenderContext, tracePass.pProgram.get(), tracePass.pVars, uint3(mParams.frameDim, 1));
+    mpScene->raytrace(pRenderContext, tracePass.pProgram.get(), tracePass.pVars, Falcor::uint3(mParams.frameDim, 1));
+    // nrc cuda pass begin
+    if (mNRC.enableNRC)
+    {
+        pRenderContext->copyBufferRegion(mNRC.mpSharedCounterBuffer.get(), 0, mNRC.mpTrainingtrainSample->getUAVCounter().get(), 0, 4);
+        pRenderContext->copyBufferRegion(mNRC.mpSharedCounterBuffer.get(), 4, mNRC.mpInferenceRadianceQuery->getUAVCounter().get(), 0, 4);
+        pRenderContext->copyBufferRegion(mNRC.mpSharedCounterBuffer.get(), 8, mNRC.mpTrainingRadianceQuery->getUAVCounter().get(), 0, 4);
+        pRenderContext->copyBufferRegion(mNRC.mpSharedCounterBuffer.get(), 12, mNRC.mpTmpPathRecord->getUAVCounter().get(), 0, 4);
+        auto element = mNRC.mpSharedCounterBuffer->getElements<uint32_t>(0, 4);
+        mNRC.mpNetwork->copyCountToHost(element);
+#ifdef LOG
+        printf("laset rand control = %u ", mNRC.train_ctrl.rand_ctrl);
+#endif
+        // > 65535 too much train suffix
+        uint tmpTrainCnt = mNRC.mpNetwork->nrc_counter.train_sample_cnt;
+        mNRC.train_ctrl.update(tmpTrainCnt);
+        mNRC.train_ctrl.get_rand_ctrl();
+#ifdef LOG
+        printf("new rand control = %d tmpTrainCnt = %d\n", mNRC.train_ctrl.rand_ctrl, tmpTrainCnt);
+        mNRC.train_ctrl.showParameters();
+#endif
+
+#ifdef LOG
+        for (uint32_t i = 0; i < element.size(); i++)
+        {
+            printf("SharedBuffer[%i] = %u || ", i, element[i]);
+        }
+        printf("\n");
+#endif
+        if (mNRC.enableNRCTrain)
+        {
+#ifdef LOG
+            logInfo("[NRC] : train stage");
+#endif
+            if (mNRC.enableSelfQuery)
+            {
+                mNRC.mpNRC->train(element[0], element[2], mNRC.enableShuffleTrain);
+            }
+            else
+            {
+                mNRC.mpNRC->trainSimple(element[0], mNRC.enableShuffleTrain);
+            }
+            cudaDeviceSynchronize();
+        }
+        else
+        {
+#ifdef LOG
+            logInfo("[NRC log] : no train");
+#endif
+        }
+        //
+#ifdef LOG
+        logInfo("[NRC log] :inference stage");
+#endif
+        mNRC.mpNRC->inference(element[1], mNRC.enableReflectanceFactorization);
+        cudaDeviceSynchronize();
+
+        auto Compositevar = mCompositePass->getRootVar();
+        Compositevar["CB"]["view"] = mNRC.visualizeMode;
+        Compositevar["factor"] = mNRC.mpScreenQueryFactor;
+        Compositevar["bias"] = mNRC.mpScreenQueryBias;
+        Compositevar["radiance"] = mNRC.mpScreenResult;
+        Compositevar["output"] = renderData.getTexture("color");
+#ifdef LOG
+        logInfo("[computer Pass] running");
+#endif
+        mCompositePass->execute(pRenderContext, Falcor::uint3(mParams.frameDim, 1));
+    }
+    // nrc cuda pass end
 }
 
 void NRCPathTracer::resolvePass(RenderContext* pRenderContext, const RenderData& renderData)
@@ -1595,6 +1924,7 @@ DefineList NRCPathTracer::StaticParams::getDefines(const NRCPathTracer& owner) c
     defines.add("SAMPLES_PER_PIXEL", (owner.mFixedSampleCount ? std::to_string(samplesPerPixel) : "0")); // 0 indicates a variable sample
                                                                                                          // count
     defines.add("MAX_SURFACE_BOUNCES", std::to_string(maxSurfaceBounces));
+    defines.add("MAX_INFER_BOUNCES", std::to_string(maxInferBounces));
     defines.add("MAX_DIFFUSE_BOUNCES", std::to_string(maxDiffuseBounces));
     defines.add("MAX_SPECULAR_BOUNCES", std::to_string(maxSpecularBounces));
     defines.add("MAX_TRANSMISSON_BOUNCES", std::to_string(maxTransmissionBounces));
@@ -1646,3 +1976,6 @@ DefineList NRCPathTracer::StaticParams::getDefines(const NRCPathTracer& owner) c
 
     return defines;
 }
+
+// nrc function
+void NRCPathTracer::initNRC(ref<Device> pDevice, Falcor::uint2 targetDim) {}

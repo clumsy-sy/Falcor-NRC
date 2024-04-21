@@ -26,6 +26,7 @@
  # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  **************************************************************************/
 #pragma once
+#include "Core/API/Texture.h"
 #include "Falcor.h"
 #include "RenderGraph/RenderPass.h"
 #include "RenderGraph/RenderPassHelpers.h"
@@ -39,6 +40,9 @@
 #include "Rendering/RTXDI/RTXDI.h"
 
 #include "Params.slang"
+
+// nrc part
+#include "NRCInterface.h"
 
 using namespace Falcor;
 
@@ -57,7 +61,7 @@ public:
     virtual void execute(RenderContext* pRenderContext, const RenderData& renderData) override;
     virtual void renderUI(Gui::Widgets& widget) override;
     virtual void setScene(RenderContext* pRenderContext, const ref<Scene>& pScene) override;
-    virtual bool onMouseEvent(const MouseEvent& mouseEvent) override ;
+    virtual bool onMouseEvent(const MouseEvent& mouseEvent) override;
     virtual bool onKeyEvent(const KeyboardEvent& keyEvent) override { return false; }
 
     PixelStats& getPixelStats() { return *mpPixelStats; }
@@ -90,7 +94,7 @@ private:
     void validateOptions();
     void resetPrograms();
     void updatePrograms();
-    void setFrameDim(const uint2 frameDim);
+    void setFrameDim(const Falcor::uint2 frameDim);
     void prepareResources(RenderContext* pRenderContext, const RenderData& renderData);
     void preparePathTracer(const RenderData& renderData);
     void resetLighting();
@@ -119,6 +123,9 @@ private:
         uint32_t maxDiffuseBounces = 3;  ///< Max number of diffuse bounces (0 = direct only), up to kMaxBounces.
         uint32_t maxSpecularBounces = 3; ///< Max number of specular bounces (0 = direct only), up to kMaxBounces.
         uint32_t maxTransmissionBounces = 10; ///< Max number of transmission bounces (0 = none), up to kMaxBounces.
+        // nrc begin
+        uint32_t maxInferBounces = 2; ///< Number of short path which will get cache in network.
+        // nrc end
 
         // Sampling parameters
         uint32_t sampleGenerator = SAMPLE_GENERATOR_TINY_UNIFORM; ///< Pseudorandom sample generator type.
@@ -160,7 +167,7 @@ private:
 
     bool mEnabled = true; ///< Switch to enable/disable the path tracer. When disabled the pass outputs are cleared.
     RenderPassHelpers::IOSize mOutputSizeSelection = RenderPassHelpers::IOSize::Default; ///< Selected output size.
-    uint2 mFixedOutputSize = {512, 512}; ///< Output size in pixels when 'Fixed' size is selected.
+    Falcor::uint2 mFixedOutputSize = {512, 512}; ///< Output size in pixels when 'Fixed' size is selected.
 
     bool mSERSupported = false; ///< True if the device supports SER.
 
@@ -202,4 +209,81 @@ private:
     ref<Buffer> mpSampleNRDPrimaryHitNeeOnDelta; ///< Compact per-sample NEE on delta primary vertices data.
     ref<Buffer> mpSampleNRDEmission;             ///< Compact per-sample NRD emission data.
     ref<Buffer> mpSampleNRDReflectance;          ///< Compact per-sample NRD reflectance data.
+
+    // NRC
+    struct train_ray_control
+    {
+        double change_rate = 0.01;
+        double a = 1980 * 1080;
+        double b = 0;
+        double percentage = (double)65536 / a;
+        uint rand_ctrl = 4294967295 * percentage;
+
+        double func(double x) { return a * x + b; }
+
+        double invfunc(double y) { return (y - b) / a; }
+
+        void update(uint y)
+        {
+            double prediction = func(percentage);
+            double delta = prediction - y;
+            a -= change_rate * delta * percentage;
+            b -= change_rate * delta;
+
+            percentage = invfunc(65536);
+        }
+
+        uint get_rand_ctrl()
+        {
+            rand_ctrl = 4294967295 * percentage;
+            return rand_ctrl;
+        }
+
+        void showParameters() { printf("y = %lf * x + %lf; percentage = %lf, expected = %lf\n", a, b, percentage, func(percentage)); }
+    };
+
+    // NRC part
+    struct
+    {
+        std::shared_ptr<NRC::NRCInterface> mpNRC = nullptr;
+        std::shared_ptr<NRC::NRCNetwork> mpNetwork = nullptr;
+
+        bool enableNRC = true;
+        bool enableNRCTrain = true;
+        bool enableSelfQuery = false;
+        bool enableShuffleTrain = true;
+        bool enableReflectanceFactorization = true;
+
+        // uint mMaxInferBounces = 1;
+        uint mMaxTrainBounces = 3; // max path segments for training suffix
+
+        uint visualizeMode = 0;
+        uint frameCount = 0;
+        train_ray_control train_ctrl;
+
+        ref<Buffer> mpTrainingRadianceQuery = nullptr;
+        ref<Buffer> mpTrainingtrainSample = nullptr;
+        ref<Buffer> mpInferenceRadianceQuery = nullptr;
+        ref<Buffer> mpInferenceRadiancePixel = nullptr;
+        ref<Buffer> mpSharedCounterBuffer = nullptr;
+        ref<Buffer> mpTmpPathRecord = nullptr;
+
+        ref<Texture> mpScreenResult = nullptr;
+        ref<Texture> mpScreenQueryFactor = nullptr;
+        ref<Texture> mpScreenQueryBias = nullptr;
+
+    } mNRC;
+
+    ref<ComputePass> mCompositePass;
+    /**
+     * @brief Apply for video memory, BUFFER & TEXTURE
+     */
+    void initNRC(ref<Device> pDevice, Falcor::uint2 targetDim);
+    /**
+     *
+     */
+    void NRCPass(RenderContext* pRenderContext, const RenderData& renderData);
+
+    void setNRCData(const RenderData& renderData);
+    // nrc part end
 };
