@@ -28,7 +28,7 @@
 #pragma once
 
 // use LOG
-#define LOG
+// #define LOG
 
 #include <memory>
 #include "Falcor.h"

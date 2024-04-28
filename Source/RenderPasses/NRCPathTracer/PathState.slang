@@ -26,6 +26,8 @@
  # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  **************************************************************************/
 import Utils.Math.PackedFormats;
+import Scene.ShadingData;
+import PathTracerNRC;
 __exported import Scene.HitInfo;
 __exported import Utils.Math.Ray;
 __exported import Utils.Sampling.SampleGenerator;
@@ -64,6 +66,8 @@ enum class PathFlags
     deltaTransmissionPath       = 0x0800,   ///< Path started with and followed delta transmission events (whenever possible - TIR could be an exception) until it hit the first non-delta event.
     deltaOnlyPath               = 0x1000,   ///< There was no non-delta events along the path so far.
 
+    hitMissOrNoRay              = 0x2000,   ///< This path terminated becase of hit miss or Ray construction failed
+
     // Bits 14 to kPathFlagsBitCount are still unused.
 };
 
@@ -81,7 +85,7 @@ enum class BounceType
 */
 struct PathState
 {
-    uint        id;                     ///< Path ID encodes (pixel, sampleIdx) with 12 bits each for pixel x|y and 8 bits for sample index.
+    uint        id;                     ///< Path ID encodes (pixel, sampleIdx) with 12 bits each for pixel x|y and 7 bits for sample index, ::8 bit for train suffix.
 
     uint        flagsAndVertexIndex;    ///< Higher kPathFlagsBitCount bits: Flags indicating the current status. This can be multiple PathFlags flags OR'ed together.
                                         ///< Lower kVertexIndexBitCount bits: Current vertex index (0 = camera, 1 = primary hit, 2 = secondary hit, etc.).
@@ -91,6 +95,7 @@ struct PathState
 
     // Scatter ray
     float3      origin;                 ///< Origin of the scatter ray.
+    uint        record_id;              ///< record id in path record a buffer
     float3      dir;                    ///< Scatter ray normalized direction.
     float       pdf;                    ///< Pdf for generating the scatter ray.
     float3      normal;                 ///< Shading normal at the scatter ray origin.
@@ -127,11 +132,17 @@ struct PathState
     bool isDeltaReflectionPrimaryHit() { return hasFlag(PathFlags::deltaReflectionPrimaryHit); }
     bool isDeltaTransmissionPath() { return hasFlag(PathFlags::deltaTransmissionPath); }
     bool isDeltaOnlyPath() { return hasFlag(PathFlags::deltaOnlyPath); }
+    bool isTrainSuffix() { return (id >> 24 & 1) == 1; }
+    bool isHitMissOrNoRay() { return hasFlag(PathFlags::hitMissOrNoRay); }
 
     // Check if the scatter event is samplable by the light sampling technique.
     bool isLightSamplable() { return !isDelta(); }
 
     [mutating] void terminate() { setFlag(PathFlags::active, false); }
+    [mutating] void terminate(ShadingData sd) {
+        record_id = NRC::addPathRecord(sd, thp);
+        setFlag(PathFlags::active, false);
+    }
     [mutating] void setActive() { setFlag(PathFlags::active); }
     [mutating] void setHit(HitInfo hitInfo) { hit = hitInfo; setFlag(PathFlags::hit); }
     [mutating] void clearHit() { setFlag(PathFlags::hit, false); }
@@ -152,6 +163,7 @@ struct PathState
     [mutating] void setDeltaReflectionPrimaryHit(bool value = true) { setFlag(PathFlags::deltaReflectionPrimaryHit, value); }
     [mutating] void setDeltaTransmissionPath(bool value = true) { setFlag(PathFlags::deltaTransmissionPath, value); }
     [mutating] void setDeltaOnlyPath(bool value = true) { setFlag(PathFlags::deltaOnlyPath, value); }
+    [mutating] void setHitMissOrNoRay(bool value = true) { setFlag(PathFlags::hitMissOrNoRay, value); setFlag(PathFlags::active, false);}
 
     bool hasFlag(PathFlags flag)
     {
@@ -186,7 +198,8 @@ struct PathState
     }
 
     uint2 getPixel() { return uint2(id, id >> 12) & 0xfff; }
-    uint getSampleIdx() { return id >> 24; }
+    uint getSampleIdx() { return id >> 25; }
+    bool getTrainSuffix() { return (id >> 24 & 1) == 1;}
 
     // Unsafe - assumes that index is small enough.
     [mutating] void setVertexIndex(uint index)

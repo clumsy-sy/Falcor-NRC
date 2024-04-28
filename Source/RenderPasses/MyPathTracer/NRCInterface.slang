@@ -149,6 +149,7 @@ namespace MININRC
         sample.train_idx = num;
         sample.L = radiance;
         sample.thp = thp;
+        check(sample);
         gTrainingtrainSample[idx] = sample;
     }
 
@@ -159,6 +160,40 @@ namespace MININRC
         res.y = isinf(res.y) || isnan(res.y) ? 0 : res.y;
         res.z = isinf(res.z) || isnan(res.z) ? 0 : res.z;
         return res;
+    }
+
+    void check(inout MININRC::trainSample sample) {
+        checkInputBase(sample.input);
+        checkFloat3(sample.L);
+        checkFloat3(sample.thp);
+    }
+
+    void checkInputBase(inout MININRC::inputBase base) {
+        checkFloat3(base.hit_pos);
+        chechFloat(base.suf_roughness);
+        checkFloat2UV(base.scatter_dir);
+        checkFloat2UV(base.suf_normal);
+        checkFloat3(base.diffuse_refl);
+        checkFloat3(base.specular_refl);
+    }
+
+    void checkFloat3(inout float3 f) {
+        f.x = isinf(f.x) || isnan(f.x) ? 0.0f : f.x;
+        f.y = isinf(f.y) || isnan(f.y) ? 0.0f : f.y;
+        f.z = isinf(f.z) || isnan(f.z) ? 0.0f : f.z;
+    }
+
+    void checkFloat2UV(inout float2 uv) {
+        uv.x = isinf(uv.x) || isnan(uv.x) ? 0.0f : uv.x;
+        uv.x = uv.x > 1.0 ? 1.0f : uv.x;
+        uv.x = uv.x < 0.0 ? 0.0f : uv.x;
+        uv.y = isinf(uv.y) || isnan(uv.y) ? 0.0f : uv.y;
+        uv.y = uv.y > 1.0 ? 1.0f : uv.y;
+        uv.y = uv.y < 0.0 ? 0.0f : uv.y;
+    }
+
+    void chechFloat(inout float f) {
+        f = isinf(f) || isnan(f) ? 0.0f : f;
     }
 
 }

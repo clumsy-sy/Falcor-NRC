@@ -10,6 +10,8 @@
 
 #include "NRCHelper.cuh"
 
+// #define LOG
+
 namespace NRC
 {
 
@@ -66,16 +68,16 @@ struct NRCMemory
  * @brief copy network input struct to T*
  */
 template<typename T>
-__device__ void copyInputBase(T* data, const MININRC::inputBase* query)
+__device__ void copyInputBase(T* data, const NRC::inputBase* query)
 {
-    const size_t size = sizeof(MININRC::inputBase);
+    const size_t size = sizeof(NRC::inputBase);
     memcpy(data, query, size);
 }
 /*
  * @brief copy network input struct to T*
  */
 template<uint32_t inputDim, typename T = float>
-__global__ void genBatchSeq(uint32_t n_elements, uint32_t offset, MININRC::inputBase* queries, T* data)
+__global__ void genBatchSeq(uint32_t n_elements, uint32_t offset, NRC::inputBase* queries, T* data)
 {
     uint32_t i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i + offset < n_elements)
@@ -104,7 +106,7 @@ __global__ void mapInferenceResultToSurface(uint32_t n_elements, T* data, cudaSu
 template<uint32_t inputDim, typename T = float>
 __global__ void mapInferenceResultToSurfaceWithRF(
     uint32_t n_elements,
-    MININRC::inputBase* query,
+    NRC::inputBase* query,
     T* target,
     cudaSurfaceObject_t output,
     uint2* pixels
@@ -129,9 +131,9 @@ template<uint32_t inputDim, typename T = float>
 __global__ void genTrainDataFromSamples(
     uint32_t n_elements,
     uint32_t offset,
-    MININRC::trainSample* samples,
+    NRC::trainSample* samples,
     uint32_t* train_sample_cnt,
-    MININRC::inputBase* self_queries,
+    NRC::inputBase* self_queries,
     uint32_t* self_query_cnt,
     T* self_query_result,
     T* train_data,
@@ -177,7 +179,7 @@ template<uint32_t inputDim, typename T = float>
 __global__ void genTrainDataFromSamplesSimple(
     uint32_t n_elements,
     uint32_t offset,
-    MININRC::trainSample* samples,
+    NRC::trainSample* samples,
     uint32_t* train_sample_cnt,
     T* train_data,
     T* train_target,

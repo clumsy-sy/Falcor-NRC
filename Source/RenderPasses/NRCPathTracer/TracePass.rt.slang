@@ -39,6 +39,9 @@ import PathTracerNRD;
 
 import Utils.NVAPI; // TODO(@skallweit) this is currently needed to make g_NvidiaExt visible
 
+import PathTracerNRC;
+import Utils.Sampling.Pseudorandom.LCG;
+
 ParameterBlock<PathTracer> gPathTracer;
 #if USE_SER
 ReorderingScheduler gScheduler;
@@ -50,16 +53,44 @@ Scheduler gScheduler;
 static const uint kRayTypeScatter = 0;
 static const uint kMissScatter = 0;
 
-struct DummyAttribs { uint dummy; };
+// NRC part
+#ifndef ENABLE_NRC
+#define ENABLE_NRC true
+#endif
+
+#ifndef NRC_MAX_TRAINING_BOUNCES
+#define NRC_MAX_TRAINING_BOUNCES 5
+#endif
+
+static const bool kComputeDirect = ENABLE_NRC;
+static const bool enableNRC = ENABLE_NRC;
+// 记录训练的光线的所有信息
+static NRC::PathVertexRecord pathRecords[12];
+static bool train_suffix = false;
+static uint train_idx;
+cbuffer NRCCB
+{
+    uint gWidth;
+    uint gHeight;
+    uint gFrameCount;
+    uint randNum;
+}
+// NRC pary end
+
+struct DummyAttribs
+{
+    uint dummy;
+};
 
 struct PathPayload
 {
-    uint4 packed[5];
-
+    uint4 packed[6];
+    // uint4 mymsg;
     PackedHitInfo hit;
     GuideData guideData;
-    InteriorList interiorList;  ///< Interior list. Keeping track of a stack of materials with medium properties. The size depends on the config (4B/item).
-    SampleGenerator sg;         ///< Sample generator state. Typically 4-16B.
+    InteriorList interiorList; ///< Interior list. Keeping track of a stack of materials with medium properties. The size depends on the
+                               ///< config (4B/item).
+    SampleGenerator sg;        ///< Sample generator state. Typically 4-16B.
 
     static PathPayload pack(const PathState path)
     {
@@ -80,11 +111,12 @@ struct PathPayload
         p.packed[4].xyz = asuint(path.L);
         p.packed[4].w = asuint(path.pdf);
 
+        p.packed[5].x = path.record_id;
+
         p.hit = path.hit.getData();
         p.guideData = path.guideData;
         p.interiorList = path.interiorList;
         p.sg = path.sg;
-
         return p;
     }
 
@@ -107,6 +139,8 @@ struct PathPayload
 
         path.L = asfloat(p.packed[4].xyz);
         path.pdf = asfloat(p.packed[4].w);
+
+        path.record_id = (p.packed[5].x);
 
         path.hit = HitInfo(p.hit);
         path.guideData = p.guideData;
@@ -315,7 +349,16 @@ struct ReorderingScheduler
                 const Ray ray = path.getScatterRay();
                 payload = PathPayload::pack(path);
                 const uint rayFlags = kUseAlphaTest ? RAY_FLAG_NONE : RAY_FLAG_FORCE_OPAQUE;
-                hitObject = HitObject::TraceRay( gScene.rtAccel, rayFlags, 0xff /* instanceInclusionMask */, kRayTypeScatter /* hitIdx */, rayTypeCount, kMissScatter, ray.toRayDesc(), payload );
+                hitObject = HitObject::TraceRay(
+                    gScene.rtAccel,
+                    rayFlags,
+                    0xff /* instanceInclusionMask */,
+                    kRayTypeScatter /* hitIdx */,
+                    rayTypeCount,
+                    kMissScatter,
+                    ray.toRayDesc(),
+                    payload
+                );
                 path = PathPayload::unpack(payload);
 
                 if (hitObject.IsHit())
@@ -370,7 +413,8 @@ struct ReorderingScheduler
             if (kSamplesPerPixel == 0)
             {
                 bool needReorder = WaveActiveAnyTrue(samplesRemaining == 0);
-                if (samplesRemaining == 0) break;
+                if (samplesRemaining == 0)
+                    break;
                 if (needReorder)
                 {
                     HitObject hitObject = HitObject::MakeNop();
@@ -382,7 +426,7 @@ struct ReorderingScheduler
 }
 
 /** Simple scheduler using a fullscreen raytracing dispatch.
-*/
+ */
 struct Scheduler
 {
     /** Handle a miss.
@@ -439,8 +483,18 @@ struct Scheduler
         const Ray ray = path.getScatterRay();
         PathPayload payload = PathPayload::pack(path);
         uint rayFlags = RAY_FLAG_NONE;
-        if (!kUseAlphaTest) rayFlags |= RAY_FLAG_FORCE_OPAQUE;
-        TraceRay(gScene.rtAccel, rayFlags, 0xff /* instanceInclusionMask */, kRayTypeScatter /* hitIdx */, rayTypeCount, kMissScatter /* missIdx */, ray.toRayDesc(), payload);
+        if (!kUseAlphaTest)
+            rayFlags |= RAY_FLAG_FORCE_OPAQUE;
+        TraceRay(
+            gScene.rtAccel,
+            rayFlags,
+            0xff /* instanceInclusionMask */,
+            kRayTypeScatter /* hitIdx */,
+            rayTypeCount,
+            kMissScatter /* missIdx */,
+            ray.toRayDesc(),
+            payload
+        );
 
         path = PathPayload::unpack(payload);
     }
@@ -473,16 +527,44 @@ struct Scheduler
             // the path tracer runs first. Abort execution here to avoid double work.
             return;
         }
-
+        uint record_cnt = 0;
+        bool inferGet = false;
+        if(path.isTrainSuffix()) {
+            pathRecords[record_cnt++] = NRC::reconstructPathRecord(path.getPixel(), path.record_id, path.L);
+        }
         // Trace path.
         while (path.isActive())
         {
             nextHit(path);
+            if (path.isTrainSuffix())
+            {
+                pathRecords[record_cnt++] = NRC::reconstructPathRecord(path.getPixel(), path.record_id, path.L);
+            }
+            const uint diffuseBounces = path.getBounces(BounceType::Diffuse);
+            const uint specularBounces = path.getBounces(BounceType::Specular);
+            const uint transmissionBounces = path.getBounces(BounceType::Transmission);
+            const uint surfaceBounces = diffuseBounces + specularBounces + transmissionBounces;
+            if (!inferGet && surfaceBounces >= kMaxInferBounces)
+            {
+#if !defined(DELTA_REFLECTION_PASS) && !defined(DELTA_TRANSMISSION_PASS)
+                gPathTracer.writeOutput(path);
+                inferGet = true;
+                if (!path.isTrainSuffix()) {
+                    break;
+                }
+#endif
+            }
+        }
+        if (path.isTrainSuffix()) {
+            for (uint i = 1; i < record_cnt; i++) {
+                float3 radiance = NRC::safe_div((path.L - pathRecords[i - 1].L), pathRecords[i - 1].thp);
+                NRC::addTrainingSample(radiance, pathRecords[i].thp, pathRecords[i].record, train_idx);
+            }
         }
 
-#if !defined(DELTA_REFLECTION_PASS) && !defined(DELTA_TRANSMISSION_PASS)
-        gPathTracer.writeOutput(path);
-#endif
+// #if !defined(DELTA_REFLECTION_PASS) && !defined(DELTA_TRANSMISSION_PASS)
+//         gPathTracer.writeOutput(path);
+// #endif
     }
 
     /** Runs the path tracer for a single pixel.
@@ -497,11 +579,22 @@ struct Scheduler
             samplesRemaining = gPathTracer.sampleCount[pixel];
         }
 
+        if (enableNRC)
+        {
+            LCG lcg = createLCG(pixel.x * gWidth + pixel.y + gFrameCount);
+            uint rnum = nextRandom(lcg);
+            if (rnum < randNum)
+            {
+                train_suffix = true;
+                train_idx = -1;
+            }
+        }
+
         // Loop over samples.
         while (samplesRemaining > 0)
         {
             samplesRemaining -= 1;
-            uint pathID = pixel.x | (pixel.y << 12) | (samplesRemaining << 24);
+            uint pathID = pixel.x | (pixel.y << 12) | (samplesRemaining << 25) | uint(train_suffix) << 24;
             tracePath(pathID);
         }
     }
@@ -512,7 +605,7 @@ struct Scheduler
 //
 
 [shader("miss")]
-void scatterMiss(inout PathPayload payload : SV_RayPayload)
+void scatterMiss(inout PathPayload payload: SV_RayPayload)
 {
     gScheduler.handleMiss(payload);
 }
@@ -522,19 +615,26 @@ void scatterMiss(inout PathPayload payload : SV_RayPayload)
 //
 
 [shader("anyhit")]
-void scatterTriangleAnyHit(inout PathPayload payload : SV_RayPayload, BuiltInTriangleIntersectionAttributes attribs : SV_IntersectionAttributes)
+void scatterTriangleAnyHit(
+    inout PathPayload payload: SV_RayPayload,
+    BuiltInTriangleIntersectionAttributes attribs: SV_IntersectionAttributes
+)
 {
 #if USE_ALPHA_TEST
     // Alpha test for non-opaque geometry.
     GeometryInstanceID instanceID = getGeometryInstanceID();
     VertexData v = getVertexData(instanceID, PrimitiveIndex(), attribs);
     const uint materialID = gScene.getMaterialID(instanceID);
-    if (gScene.materials.alphaTest(v, materialID, 0.f)) IgnoreHit();
+    if (gScene.materials.alphaTest(v, materialID, 0.f))
+        IgnoreHit();
 #endif
 }
 
 [shader("closesthit")]
-void scatterTriangleClosestHit(inout PathPayload payload : SV_RayPayload, BuiltInTriangleIntersectionAttributes attribs : SV_IntersectionAttributes)
+void scatterTriangleClosestHit(
+    inout PathPayload payload: SV_RayPayload,
+    BuiltInTriangleIntersectionAttributes attribs: SV_IntersectionAttributes
+)
 {
 #if USE_SER
     gScheduler.handleHit(payload);
@@ -607,7 +707,6 @@ void scatterCurveClosestHit(inout PathPayload payload, CurveIntersector::Attribs
     gScheduler.handleHit(payload, HitInfo(curveHit), RayTCurrent());
 #endif
 }
-
 
 //
 // Shader entry points for SDFGrid hit groups.

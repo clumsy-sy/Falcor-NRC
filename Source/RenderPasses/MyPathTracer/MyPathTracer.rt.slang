@@ -87,8 +87,6 @@ RWTexture2D<float4> gOutputColor;
 static MININRC::PathVertexRecord hitRecords[NRC_MAX_TRAINING_BOUNCES + 1];
 static bool trainSuffix = false;
 static uint train_idx;
-static ShadingData lastSD;
-static float3 lastTHP;
 
 // Static configuration based on defines set from the host.
 #define is_valid(name) (is_valid_##name != 0)
@@ -336,7 +334,6 @@ bool generateScatterRay(const ShadingData sd, const IMaterialInstance mi, bool i
         }
         rayData.direction = bsdfSample.wo;
         rayData.thp *= bsdfSample.weight;
-        lastTHP = rayData.thp;
         return any(rayData.thp > 0.f);
     }
     return false;
@@ -454,7 +451,6 @@ float3 tracePathWithNRC(const uint2 pixel, const uint2 frameDim)
 
         // Load shading data
         ShadingData sd = loadShadingData(hit, primaryRayOrigin, primaryRayDir, lod);
-        lastSD = sd;
 
         // Create material instance at shading point.
         let mi = gScene.materials.getMaterialInstance(sd, lod);
@@ -488,7 +484,6 @@ float3 tracePathWithNRC(const uint2 pixel, const uint2 frameDim)
         }
 
         ScatterRayData rayData = ScatterRayData(sg, trainSuffix);
-        lastTHP = rayData.thp;
 
         // Generate scatter ray.
         if (!generateScatterRay(sd, mi, isCurveHit, rayOrigin, rayData))
@@ -553,7 +548,7 @@ float3 tracePathWithNRC(const uint2 pixel, const uint2 frameDim)
                     }
                 }
             }
-            MININRC::addTrainingSample(outColor, float3(1.0, 1.0, 1.0), MININRC::generateQuery(sd), pixel.x * gWidth + pixel.y);
+            MININRC::addTrainingSample(outColor, float3(1.0, 1.0, 1.0), MININRC::generateQuery(sd), train_idx);
         }
     }
     else

@@ -44,6 +44,7 @@ import Utils.Debug.PixelDebug;
 import LoadShadingData;
 import ColorType;
 import NRDHelpers;
+import PathTracerNRC;
 __exported import PathState;
 __exported import Params;
 
@@ -240,15 +241,25 @@ struct PathTracer
     */
     bool hasFinishedSurfaceBounces(const PathState path)
     {
-        const uint diffuseBounces = path.getBounces(BounceType::Diffuse);
-        const uint specularBounces = path.getBounces(BounceType::Specular);
-        const uint transmissionBounces = path.getBounces(BounceType::Transmission);
-        const uint surfaceBounces = diffuseBounces + specularBounces + transmissionBounces;
-        return
-            (surfaceBounces > kMaxSurfaceBounces) ||
-            (diffuseBounces > kMaxDiffuseBounces) ||
-            (specularBounces > kMaxSpecularBounces) ||
-            (transmissionBounces > kMaxTransmissionBounces);
+        if(path.isTrainSuffix()) {
+            const uint diffuseBounces = path.getBounces(BounceType::Diffuse);
+            const uint specularBounces = path.getBounces(BounceType::Specular);
+            const uint transmissionBounces = path.getBounces(BounceType::Transmission);
+            const uint surfaceBounces = diffuseBounces + specularBounces + transmissionBounces;
+
+            return
+                (surfaceBounces > kMaxSurfaceBounces) ||
+                (diffuseBounces > kMaxDiffuseBounces) ||
+                (specularBounces > kMaxSpecularBounces) ||
+                (transmissionBounces > kMaxTransmissionBounces);
+        } else {
+            const uint diffuseBounces = path.getBounces(BounceType::Diffuse);
+            const uint specularBounces = path.getBounces(BounceType::Specular);
+            const uint transmissionBounces = path.getBounces(BounceType::Transmission);
+            const uint surfaceBounces = diffuseBounces + specularBounces + transmissionBounces;
+            return surfaceBounces > kMaxInferBounces;
+        }
+
     }
 
     /** Compute the total length of a terminated path.
@@ -761,7 +772,8 @@ struct PathTracer
             }
             else
             {
-                path.terminate();
+                // path.terminate();
+                path.terminate(sd);
             }
             return false;
         }
@@ -783,7 +795,8 @@ struct PathTracer
         const float prob = max(0.f, 1.f - rrVal);
         if (u < prob)
         {
-            path.terminate();
+            // path.terminate();
+            path.setHitMissOrNoRay();
             return true;
         }
         path.thp /= 1.f - prob;
@@ -921,7 +934,8 @@ struct PathTracer
         // Terminate after scatter ray on last vertex has been processed.
         if (hasFinishedSurfaceBounces(path))
         {
-            path.terminate();
+            // path.terminate();
+            path.terminate(sd);
             return;
         }
 
@@ -1057,8 +1071,12 @@ struct PathTracer
 
         if (!valid)
         {
-            path.terminate();
+            // path.terminate();
+            path.terminate(sd);
         }
+        // if(path.isTrainSuffix()) {
+            path.record_id = NRC::addPathRecord(sd, path.thp);
+        // }
     }
 
     /** Handle the case when a scatter ray misses the scene.
@@ -1149,7 +1167,8 @@ struct PathTracer
         }
 #endif
 
-        path.terminate();
+        // path.terminate();
+        path.setHitMissOrNoRay();
     }
 
     /** Write path contribution to output buffer.
@@ -1168,6 +1187,12 @@ struct PathTracer
         {
             // Write color directly to frame buffer.
             outputColor[pixel] = float4(path.L, 1.f);
+            if (!path.isHitMissOrNoRay()) {
+                NRC::writeInferQuery(pixel, path.record_id, path.L);
+            }
+            else {
+                NRC::writeNoNeedInfer(pixel, path.L, path.thp);
+            }
         }
         else
         {

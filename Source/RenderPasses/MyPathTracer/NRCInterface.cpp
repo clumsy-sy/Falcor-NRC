@@ -73,14 +73,11 @@ void NRCInterface::train(uint32_t train_cnt, uint32_t self_queriy_cnt, bool shuf
         loss,
         shuffle
     );
-
-    mStats.n_frames++;
-    mStats.train_loss_avg = mStats.ema_factor * mStats.train_loss_avg + (1 - mStats.ema_factor) * loss;
 }
 
 void NRCInterface::trainSimple(uint32_t train_cnt, bool shuffle)
 {
-    float loss;
+    float loss = nrc_network_ref->getLearningRate();
     if (mCudaResources.train_sample == nullptr || mCudaResources.train_sample_cnt == nullptr)
     {
         std::cerr << "[ERROR] : NRCInterface::trainFrame -> train resources is Empty!\n";
@@ -88,8 +85,6 @@ void NRCInterface::trainSimple(uint32_t train_cnt, bool shuffle)
     }
 
     nrc_network_ref->nrc_train_simple(mCudaResources.train_sample, mCudaResources.train_sample_cnt, loss, shuffle);
-    mStats.n_frames++;
-    mStats.train_loss_avg = mStats.ema_factor * mStats.train_loss_avg + (1 - mStats.ema_factor) * loss;
 }
 
 void NRCInterface::inference(uint32_t infer_cnt, bool useRF)

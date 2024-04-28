@@ -14,7 +14,7 @@
 #include "curand.h"
 
 // show some log
-#define LOG
+// #define LOG
 
 namespace MININRC
 {

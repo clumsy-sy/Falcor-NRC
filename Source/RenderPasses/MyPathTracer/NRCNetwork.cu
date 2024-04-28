@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cstdint>
 #include <memory>
 #include "NRCNetwork.h"
@@ -5,6 +6,7 @@
 // tcnn
 #include <cstdint>
 #include <json/json.hpp>
+#include <vector>
 #include <tiny-cuda-nn/common.h>
 #include <tiny-cuda-nn/config.h>
 
@@ -45,7 +47,7 @@ struct NRCMemory
     tcnn::GPUMatrix<float>* infer_result = nullptr;
     tcnn::GPUMatrix<float>* train_self_query = nullptr;
     tcnn::GPUMatrix<float>* train_self_result = nullptr;
-    tcnn::GPUMemory<float>* random_seq = nullptr;
+    tcnn::GPUMemory<uint32_t>* random_seq = nullptr;
 };
 
 // cuda function is gloable, so carefully, do not redefine.
@@ -135,7 +137,8 @@ __global__ void genTrainDataFromSamples(
     T* self_query_result,
     T* train_data,
     T* train_target,
-    float* random_idx = nullptr
+    // float* random_idx = nullptr
+    uint32_t* random_idx = nullptr
 )
 {
     uint32_t i = blockIdx.x * blockDim.x + threadIdx.x;
@@ -144,7 +147,8 @@ __global__ void genTrainDataFromSamples(
     uint32_t data_index = i * inputDim, sample_index = i + offset;
     if (random_idx)
     {
-        sample_index = (1 - random_idx[sample_index]) * (*train_sample_cnt);
+        // sample_index = (1 - random_idx[sample_index]) * (*train_sample_cnt);
+        sample_index = random_idx[sample_index];
     }
 
     uint32_t pred_index = samples[sample_index].train_idx;
@@ -180,7 +184,8 @@ __global__ void genTrainDataFromSamplesSimple(
     uint32_t* train_sample_cnt,
     T* train_data,
     T* train_target,
-    float* random_idx = nullptr
+    // float* random_idx = nullptr
+    uint32_t* random_idx = nullptr
 )
 {
     uint32_t i = blockIdx.x * blockDim.x + threadIdx.x;
@@ -189,7 +194,8 @@ __global__ void genTrainDataFromSamplesSimple(
     uint32_t data_index = i * inputDim, sample_index = i + offset;
     if (random_idx)
     {
-        sample_index = (1 - random_idx[sample_index]) * (*train_sample_cnt);
+        // sample_index = (1 - random_idx[sample_index]) * (*train_sample_cnt);
+        sample_index = random_idx[sample_index];
     }
 
     if (sample_index < *train_sample_cnt)
@@ -244,8 +250,26 @@ void NRCNetwork::InitNRCNetwork()
     nrc_memory->infer_result = new tcnn::GPUMatrix<float>(output_dim, pixels_total);
     nrc_memory->train_self_query = new tcnn::GPUMatrix<float>(input_dim, self_query_batch_size);
     nrc_memory->train_self_result = new tcnn::GPUMatrix<float>(output_dim, self_query_batch_size);
-    nrc_memory->random_seq = new tcnn::GPUMemory<float>(n_train_batch * batch_size);
-    curandGenerateUniform(rng, nrc_memory->random_seq->data(), n_train_batch * batch_size);
+    nrc_memory->random_seq = new tcnn::GPUMemory<uint32_t>(n_train_batch * batch_size);
+    // curandGenerateUniform(rng, nrc_memory->random_seq->data(), n_train_batch * batch_size);
+
+    // test shuffle
+    std::vector<uint32_t> rand_seq(65536);
+    std::iota(rand_seq.begin(), rand_seq.end(), 0);
+
+    std::random_device rd;
+    std::mt19937 rng(rd());
+
+    std::shuffle(rand_seq.begin(), rand_seq.end(), rng);
+    cudaMemcpy(nrc_memory->random_seq->data(), rand_seq.data(), sizeof(uint32_t) * 65536, cudaMemcpyHostToDevice);
+
+    uint32_t* arr = new uint32_t[65536];
+    cudaMemcpy(arr, nrc_memory->random_seq->data(), sizeof(uint32_t) * 65536, cudaMemcpyDeviceToHost);
+    for(int i = 0; i < 100; i ++) {
+        std::cout << arr[i] << " ";
+    }
+
+    //
 
     if (nrc_memory->train_data && nrc_memory->train_target && nrc_memory->infer_data && nrc_memory->infer_result &&
         nrc_memory->train_self_query && nrc_memory->train_self_result && nrc_memory->random_seq)
@@ -394,7 +418,7 @@ void NRCNetwork::nrc_train(
 )
 {
 #ifdef LOG
-    printf("[net train] : learning_rate = %f ,", train_times, learning_rate);
+    printf("[net train] : learning_rate = %f ,", learning_rate);
     printf("train_samples_cnt = ");
     uint32_t sample_cnt = showMsg_counter(train_samples_cnt);
     printf("train_self_query_cnt = ");
@@ -425,7 +449,7 @@ void NRCNetwork::nrc_train(
         exit(-1);
     }
 
-    curandGenerateUniform(rng, nrc_memory->random_seq->data(), n_train_batch * batch_size);
+    // curandGenerateUniform(rng, nrc_memory->random_seq->data(), n_train_batch * batch_size);
     for (uint32_t i = 0; i < n_train_batch; i++)
     {
         // generate train data and traget
@@ -477,20 +501,26 @@ void NRCNetwork::nrc_train(
     train_times++;
 }
 
-void NRCNetwork::nrc_train_simple(trainSample* train_samples, uint32_t* train_samples_cnt, float& loss, bool shuffle)
+void NRCNetwork::nrc_train_simple(trainSample* train_samples, uint32_t* train_samples_cnt, float& learning_rate, bool shuffle)
 {
+    if(learning_rate <= 0.0 + 1e-8) {
+        printf("learning_rate == 0!!!\n");
+        exit(-1);
+    }
 #ifdef LOG
-    printf("[net simple_train] : learning_rate = %f ,", train_times, loss);
-    // if(learning_rate == 0.0) {
-    //     printf("learning_rate == 0!!!\n");
-    //     exit(-1);
-    // }
+    printf("[net simple_train] : learning_rate = %f ,", train_times, learning_rate);
     printf("train_sample_cnt = ");
     uint32_t sample_cnt = showMsg_counter(train_samples_cnt);
 #endif
     nrc_network->optimizer->set_learning_rate(learning_rate);
 
-    curandGenerateUniform(rng, nrc_memory->random_seq->data(), n_train_batch * batch_size);
+    // curandGenerateUniform(rng, nrc_memory->random_seq->data(), n_train_batch * batch_size);
+
+    if(nrc_counter.train_sample_cnt < (1>>14)) {
+        printf("%u", nrc_counter.train_sample_cnt);
+        exit(-1);
+    }
+
     for (uint32_t i = 0; i < n_train_batch; i++)
     {
         // generate train data and traget

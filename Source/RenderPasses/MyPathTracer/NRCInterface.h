@@ -63,13 +63,6 @@ private:
     std::shared_ptr<NRCNetwork> nrc_network_ref;
     Falcor::ref<Falcor::Device> pDevice;
 
-    struct
-    {
-        int n_frames = 0;
-        float train_loss_avg = 0; // EMA
-        const float ema_factor = 0.8f;
-    } mStats;
-
     // shader resource to cuda resource
     struct
     {
